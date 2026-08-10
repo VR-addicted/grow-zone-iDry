@@ -73,3 +73,11 @@ Do not change SPI, I2C, ADC, or actuator pin assignments:
 ## Thermodynamic Feuchteschutz & Acoustic Alerts
 * **Thermodynamic Bypass (Saug-Sperre):** If outside humidity is higher than inside humidity or $>2\%$ above target, rotor forces fully closed ($0\%$) to prevent moisture influx. Accompanied by acoustic warning chime.
 * **Acoustic Signalization:** Passive buzzer handles boot melody (C5 -> G6), boundary chimes (descending/ascending arpeggios), drying progress alerts, and connection loss watchdog alarms.
+
+---
+
+## OTA Firmware Updates & Custom 16MB Partitioning
+* **Partition Table (`partitions.csv`):** 16MB dual OTA layout (`app0` 6.5MB at 0x10000, `app1` 6.5MB at 0x690000, `spiffs`/`littlefs` 2.87MB at 0xD10000). Dual OTA banks allow safe background bank switching and automatic fallback.
+* **Firmware Versioning (`localFirmwareVersion`):** Hardcoded integer version in source code (`const int localFirmwareVersion = 6;`).
+* **GitHub Online Auto-Update:** Checks GitHub `version.txt` via `HTTPClient` with SSL insecure mode (`WiFiClientSecure::setInsecure()`). If `onlineVersion > localFirmwareVersion`, displays green **"🚀 Automatisch Online Updaten"** button in `/firmware` Web UI. Downloads and flashes `firmware.bin` directly via `httpUpdate.update()`.
+* **Manual Web OTA Upload:** `/firmware/upload` endpoint handles multipart `.bin` file stream using `Update.write()` and reboots upon completion with iDry reboot notice.
