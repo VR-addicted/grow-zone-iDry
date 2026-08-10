@@ -21,7 +21,7 @@
 #include <WiFiClientSecure.h>
 
 // Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 5;
+const int localFirmwareVersion = 9;
 
 // Sensor Libraries
 #include <Adafruit_BME280.h>
@@ -840,6 +840,7 @@ const uint8_t favicon_png[4191] PROGMEM = {
 void handleFavicon();
 void handleFirmwarePage();
 void handleAutoUpdate();
+void handleAutoUpdateApi();
 void handleUploadProgress();
 void handleUploadFinish();
 
@@ -3168,77 +3169,347 @@ void handleFirmwarePage() {
 
 void handleAutoUpdate() {
   if (WiFi.status() != WL_CONNECTED) {
-    server.send(500, "text/html", "<html><body><h1>Keine WLAN-Verbindung!</h1></body></html>");
+    server.send(500, "text/html", "<html><body><h1>Keine WLAN-Verbindung zum Internet!</h1><p><a href='/firmware'>Zurueck</a></p></body></html>");
     return;
   }
 
-  server.send(200, "text/html", R"rawhtml(
+  String html = R"rawhtml(
 <!DOCTYPE html>
-<html>
+<html lang="de">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
     <link rel="icon" type="image/x-icon" href="/favicon.ico">
     <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico">
-    <title>Online Update wird durchgefuehrt...</title>
+    <title>GitHub OTA Online-Update - IDRY-26</title>
     <style>
-        body { background: #0f172a; color: white; text-align: center; padding-top: 100px; font-family: sans-serif; }
-        .box { background: #1e293b; padding: 40px; border-radius: 15px; display: inline-block; border: 1px solid rgba(255,255,255,0.1); }
-        h1 { color: #38bdf8; margin-bottom: 20px; }
-        .spinner { border: 4px solid rgba(255,255,255,0.1); border-left-color: #38bdf8; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 20px auto; }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body {
+            background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+            color: #f8fafc;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: rgba(30, 41, 59, 0.5);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            padding: 25px;
+            width: 100%;
+            max-width: 600px;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+        }
+        h1 { text-align: center; font-size: 20px; color: #38bdf8; margin-bottom: 15px; font-weight: 600; }
+        .progress-bar-bg {
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 10px;
+            height: 22px;
+            overflow: hidden;
+            margin-bottom: 15px;
+            position: relative;
+        }
+        .progress-bar-fill {
+            background: linear-gradient(90deg, #38bdf8 0%, #818cf8 100%);
+            height: 100%;
+            width: 0%;
+            transition: width 0.4s ease;
+        }
+        .progress-text {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 11px; font-weight: bold; color: #ffffff;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+        }
+        .console {
+            background: #020617;
+            border: 1px solid rgba(56, 189, 248, 0.2);
+            border-radius: 10px;
+            padding: 15px;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 12px;
+            height: 230px;
+            overflow-y: auto;
+            color: #38bdf8;
+            line-height: 1.6;
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.5);
+        }
+        .log-line { margin-bottom: 4px; word-break: break-all; }
+        .log-error { color: #f87171; font-weight: bold; }
+        .log-success { color: #4ade80; font-weight: bold; }
+        .log-header { color: #fbbf24; }
+        .btn-nav {
+            display: inline-block; width: 100%; padding: 12px;
+            border-radius: 10px; font-size: 14px; font-weight: 600;
+            text-align: center; text-decoration: none; border: none;
+            margin-top: 15px; cursor: pointer;
+        }
+        .btn-back { background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); color: #cbd5e1; }
+        .btn-back:hover { background: rgba(255, 255, 255, 0.1); }
     </style>
 </head>
 <body>
-    <div class="box">
-        <h1>Online-Update wird ausgefuehrt...</h1>
-        <div class="spinner"></div>
-        <p>Aktuellste Firmware.bin wird von GitHub geladen und geflasht.</p>
-        <p>iDry 26 reboot in Kuerze. Stay calm :-)</p>
+    <div class="container">
+        <h1>🚀 GitHub OTA Online-Update Terminal</h1>
+        <div class="progress-bar-bg">
+            <div id="progress-fill" class="progress-bar-fill"></div>
+            <div id="progress-text" class="progress-text">0%</div>
+        </div>
+        <div id="console" class="console">
+            <div class="log-line log-header">[SYSTEM] Starte Online-Update von GitHub...</div>
+            <div class="log-line">[TARGET] https://raw.githubusercontent.com/VR-addicted/grow-zone-iDry/main/FIRMWARE/firmware.bin</div>
+        </div>
+        <a id="back-btn" href="/firmware" class="btn-nav btn-back" style="display: none;">Zurueck zu Firmware Update</a>
     </div>
-    <script>setTimeout(function(){ window.location.href = '/'; }, 15000);</script>
+
+    <script>
+        const consoleEl = document.getElementById('console');
+        const fillEl = document.getElementById('progress-fill');
+        const textEl = document.getElementById('progress-text');
+        const backBtn = document.getElementById('back-btn');
+
+        function appendLog(text, isError = false, isSuccess = false) {
+            const line = document.createElement('div');
+            line.className = 'log-line' + (isError ? ' log-error' : (isSuccess ? ' log-success' : ''));
+            line.innerText = text;
+            consoleEl.appendChild(line);
+            consoleEl.scrollTop = consoleEl.scrollHeight;
+        }
+
+        appendLog('[CONNECT] Verbinde mit GitHub raw.githubusercontent.com...');
+        fillEl.style.width = '20%';
+        textEl.innerText = '20%';
+
+        fetch('/api/firmware/autoupdate_start')
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'ok') {
+                    fillEl.style.width = '100%';
+                    textEl.innerText = '100%';
+                    appendLog('[DOWNLOAD] Datei FIRMWARE/firmware.bin erfolgreich geladen (' + (data.written || 0) + ' Bytes)!', false, true);
+                    appendLog('[HEADER VERIFY] ESP32 Magic Byte (0xE9) und Header gueltig!', false, true);
+                    appendLog('[FLASH] Inaktive OTA-Bank (app0/app1) erfolgreich beschrieben!', false, true);
+                    appendLog('[REBOOT] iDry 26 reboot. Stay calm, we are back online in a second :-)', false, true);
+                    setTimeout(() => { window.location.href = '/'; }, 6000);
+                } else {
+                    fillEl.style.width = '0%';
+                    textEl.innerText = 'Fehler';
+                    appendLog('[FEHLER] ' + (data.message || 'Update abgebrochen'), true);
+                    backBtn.style.display = 'block';
+                }
+            })
+            .catch(err => {
+                fillEl.style.width = '0%';
+                textEl.innerText = 'Fehler';
+                appendLog('[FEHLER] Verbindungsabbruch beim Flashen: ' + err, true);
+                backBtn.style.display = 'block';
+            });
+    </script>
 </body>
 </html>
-)rawhtml");
+)rawhtml";
+  server.send(200, "text/html", html);
+}
 
-  delay(500);
+void handleAutoUpdateApi() {
+  if (WiFi.status() != WL_CONNECTED) {
+    server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Keine aktive WLAN-Verbindung zum Internet.\"}");
+    return;
+  }
 
   WiFiClientSecure client;
-  client.setInsecure();
-  httpUpdate.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  t_httpUpdate_return ret = httpUpdate.update(client, "https://raw.githubusercontent.com/VR-addicted/grow-zone-iDry/main/FIRMWARE/firmware.bin");
+  client.setInsecure(); // Disable SSL cert check for ESP32 raw GitHub download
+  HTTPClient http;
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setTimeout(8000);
 
-  if (ret == HTTP_UPDATE_OK) {
-    Serial.println("[OTA] Online Update Successful! Rebooting...");
-    ESP.restart();
-  } else {
-    Serial.printf("[OTA] Online Update failed. Error code: %d\n", httpUpdate.getLastError());
+  const char *binUrl = "https://raw.githubusercontent.com/VR-addicted/grow-zone-iDry/main/FIRMWARE/firmware.bin";
+  Serial.printf("[OTA] Connecting to GitHub RAW URL: %s\n", binUrl);
+
+  if (!http.begin(client, binUrl)) {
+    server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"HTTP Verbindungsaufbau zu GitHub fehlgeschlagen.\"}");
+    return;
   }
+
+  int httpCode = http.GET();
+  if (httpCode != HTTP_CODE_OK) {
+    Serial.printf("[OTA] GitHub HTTP Error Code: %d\n", httpCode);
+    http.end();
+    server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"GitHub Datei FIRMWARE/firmware.bin nicht gefunden (HTTP " + String(httpCode) + ").\"}");
+    return;
+  }
+
+  int contentLength = http.getSize();
+  Serial.printf("[OTA] GitHub firmware.bin Content Length: %d bytes\n", contentLength);
+
+  WiFiClient *stream = http.getStreamPtr();
+  if (!stream) {
+    http.end();
+    server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"HTTP Stream von GitHub konnte nicht geoeffnet werden.\"}");
+    return;
+  }
+
+  // Read first chunk to inspect header and magic byte
+  uint8_t firstBuf[512];
+  size_t firstRead = 0;
+  unsigned long startWait = millis();
+  while (stream->available() == 0 && (millis() - startWait < 5000)) {
+    delay(10);
+  }
+
+  firstRead = stream->readBytes(firstBuf, sizeof(firstBuf));
+  if (firstRead < 4) {
+    http.end();
+    server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Dateikopf zu klein oder leer!\"}");
+    return;
+  }
+
+  // ESP32 Image Magic Byte Check: 0xE9 (233)
+  if (firstBuf[0] != 0xE9) {
+    char hexErr[128];
+    snprintf(hexErr, sizeof(hexErr), "Ungueltiges ESP32 Binary! Magic Byte 0x%02X != 0xE9 (Kein ESP32 Image). Abbruch!", firstBuf[0]);
+    Serial.printf("[OTA] %s\n", hexErr);
+    http.end();
+    server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"" + String(hexErr) + "\"}");
+    return;
+  }
+
+  Serial.println("[OTA] Magic byte 0xE9 verified! Valid ESP32 binary header.");
+
+  // Begin OTA Partition Write
+  size_t updateSize = (contentLength > 0) ? contentLength : UPDATE_SIZE_UNKNOWN;
+  if (!Update.begin(updateSize)) {
+    http.end();
+    server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Partition Flash Start fehlgeschlagen!\"}");
+    return;
+  }
+
+  // Write first chunk
+  if (Update.write(firstBuf, firstRead) != firstRead) {
+    Update.abort();
+    http.end();
+    server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Fehler beim Schreiben des ersten Datenblocks.\"}");
+    return;
+  }
+
+  // Stream remaining bytes
+  uint8_t buffer[2048];
+  size_t writtenBytes = firstRead;
+  
+  while (http.connected() && (writtenBytes < (size_t)contentLength || contentLength <= 0)) {
+    size_t sizeAvailable = stream->available();
+    if (sizeAvailable > 0) {
+      size_t readLen = stream->readBytes(buffer, min(sizeAvailable, sizeof(buffer)));
+      if (readLen > 0) {
+        if (Update.write(buffer, readLen) != readLen) {
+          Update.abort();
+          http.end();
+          server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Fehler beim Schreiben in die Partition.\"}");
+          return;
+        }
+        writtenBytes += readLen;
+      }
+    } else {
+      delay(1);
+    }
+  }
+
+  http.end();
+
+  if (contentLength > 0 && writtenBytes < (size_t)contentLength) {
+    Update.abort();
+    server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Download unvollstaendig (" + String(writtenBytes) + "/" + String(contentLength) + " Bytes).\"}");
+    return;
+  }
+
+  if (!Update.end(true)) {
+    server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"OTA Abschlussfehler (Update.end failed).\"}");
+    return;
+  }
+
+  Serial.printf("[OTA] Update.end() SUCCESS! Written total: %u bytes. Rebooting...\n", (unsigned int)writtenBytes);
+  server.send(200, "application/json", "{\"status\":\"ok\",\"message\":\"Update erfolgreich! iDry 26 reboot...\",\"written\":" + String(writtenBytes) + "}");
+  
+  delay(1000);
+  ESP.restart();
 }
+
+static bool g_manualUploadError = false;
 
 void handleUploadProgress() {
   HTTPUpload& upload = server.upload();
   if (upload.status == UPLOAD_FILE_START) {
     Serial.printf("[OTA] Manual Firmware Upload Start: %s\n", upload.filename.c_str());
+    g_manualUploadError = false;
     if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
       Update.printError(Serial);
+      g_manualUploadError = true;
     }
   } else if (upload.status == UPLOAD_FILE_WRITE) {
-    if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
-      Update.printError(Serial);
+    if (!g_manualUploadError) {
+      // Magic Byte check on first block
+      if (upload.totalSize == 0 && upload.currentSize >= 1) {
+        if (upload.buf[0] != 0xE9) {
+          Serial.printf("[OTA] Manual Upload Aborted: Magic byte 0x%02X != 0xE9 (Invalid ESP32 binary)\n", upload.buf[0]);
+          g_manualUploadError = true;
+          Update.abort();
+          return;
+        }
+      }
+      if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+        Update.printError(Serial);
+        g_manualUploadError = true;
+      }
     }
   } else if (upload.status == UPLOAD_FILE_END) {
-    if (Update.end(true)) {
-      Serial.printf("[OTA] Manual Firmware Upload Finished! Total bytes: %u\n", upload.totalSize);
-    } else {
-      Update.printError(Serial);
+    if (!g_manualUploadError) {
+      if (upload.totalSize < 100000) {
+        Serial.printf("[OTA] Manual Upload Aborted: Size too small (%u bytes < 100KB)\n", (unsigned int)upload.totalSize);
+        g_manualUploadError = true;
+        Update.abort();
+      } else if (Update.end(true)) {
+        Serial.printf("[OTA] Manual Firmware Upload Finished! Total bytes: %u\n", (unsigned int)upload.totalSize);
+      } else {
+        Update.printError(Serial);
+        g_manualUploadError = true;
+      }
     }
   }
 }
 
 void handleUploadFinish() {
-  if (Update.hasError()) {
-    server.send(500, "text/html", "<html><body><h1>Firmware-Update Fehlgeschlagen!</h1><p><a href='/firmware'>Zurueck</a></p></body></html>");
+  if (g_manualUploadError || Update.hasError()) {
+    server.send(400, "text/html", R"rawhtml(
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+    <title>Upload Fehler - IDRY-26</title>
+    <style>
+        body { background: #0f172a; color: white; text-align: center; padding-top: 80px; font-family: sans-serif; }
+        .box { background: #1e293b; padding: 30px; border-radius: 15px; display: inline-block; border: 1px solid rgba(255,255,255,0.1); max-width: 500px; box-shadow: 0 10px 20px rgba(0,0,0,0.5); }
+        h1 { color: #f87171; margin-bottom: 15px; font-size: 20px; }
+        p { color: #cbd5e1; font-size: 14px; margin-bottom: 20px; line-height: 1.6; }
+        .btn { display: inline-block; padding: 10px 20px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: white; text-decoration: none; border-radius: 8px; font-size: 13px; }
+        .btn:hover { background: rgba(255,255,255,0.2); }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h1>Firmware-Upload abgelehnt!</h1>
+        <p>Die hochgeladene Datei ist kein gültiges ESP32 Binary (Magic Byte 0xE9 fehlt oder Dateigröße kleiner als 100 KB).</p>
+        <a href="/firmware" class="btn">Zurueck zu Firmware Update</a>
+    </div>
+</body>
+</html>
+)rawhtml");
   } else {
     String html = R"rawhtml(
 <!DOCTYPE html>
@@ -3260,7 +3531,7 @@ void handleUploadFinish() {
         <h1>iDry 26 reboot.</h1>
         <p>Stay calm, we are back online in a second :-)</p>
     </div>
-    <script>setTimeout(function(){ window.location.href = '/'; }, 5000);</script>
+    <script>setTimeout(function(){ window.location.href = '/'; }, 6000);</script>
 </body>
 </html>
 )rawhtml";
@@ -3327,6 +3598,7 @@ void startCaptivePortal() {
   server.on("/api/espnow/buzzer_test", handleBuzzerTestApi);
   server.on("/firmware", handleFirmwarePage);
   server.on("/firmware/autoupdate", handleAutoUpdate);
+  server.on("/api/firmware/autoupdate_start", handleAutoUpdateApi);
   server.on("/firmware/upload", HTTP_POST, handleUploadFinish, handleUploadProgress);
   server.on("/favicon.ico", handleFavicon);
   server.on("/favicon-32x32.png", handleFavicon);
@@ -3631,6 +3903,7 @@ void setup() {
       server.on("/api/espnow/buzzer_test", handleBuzzerTestApi);
       server.on("/firmware", handleFirmwarePage);
       server.on("/firmware/autoupdate", handleAutoUpdate);
+      server.on("/api/firmware/autoupdate_start", handleAutoUpdateApi);
       server.on("/firmware/upload", HTTP_POST, handleUploadFinish, handleUploadProgress);
       server.on("/favicon.ico", handleFavicon);
       server.on("/favicon-32x32.png", handleFavicon);
