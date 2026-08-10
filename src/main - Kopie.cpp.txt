@@ -1,0 +1,1112 @@
+#include <Arduino.h>
+#include <SPI.h>
+#include <Wire.h>
+#include <Fonts/FreeMonoBold9pt7b.h>
+#include <GxEPD2_3C.h>
+#define LGFX_USE_V1
+#include <LovyanGFX.hpp>
+#include <LittleFS.h>
+#include <ArduinoJson.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <DNSServer.h>
+#include <PubSubClient.h>
+
+// Sensor Libraries
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BME280.h>
+#include <Adafruit_SHT31.h>
+#include <Adafruit_TSL2561_U.h>
+
+// --- PIN DEFINITIONS ---
+#define EPD_SCK  12
+#define EPD_MOSI 11
+#define EPD_MISO 13 
+#define EPD_CS   10
+#define EPD_DC   9
+#define EPD_RST  14
+#define EPD_BUSY 8  
+
+// Poti Analog Pins
+#define POTI_A_PIN 4  // Target Humidity
+#define POTI_B_PIN 5  // Gain
+#define POTI_C_PIN 1  // Servo Calibration Offset
+
+// =====================================================================
+// SELECT DRIVER CLASS (3-Colour driver class hacked to 240x360)
+// =====================================================================
+#define DRIVER_CLASS GxEPD2_213_Z19c
+
+// Instantiate the working 3-colour display wrapper
+GxEPD2_3C<DRIVER_CLASS, DRIVER_CLASS::HEIGHT> display(DRIVER_CLASS(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
+
+// =====================================================================
+// LOVYANGFX ILI9341 PANEL CONFIGURATION
+// =====================================================================
+class LGFX : public lgfx::LGFX_Device
+{
+  lgfx::Bus_SPI        _bus_instance;
+  lgfx::Panel_ILI9341  _panel_instance;
+  lgfx::Light_PWM      _light_instance;
+
+public:
+  LGFX(void)
+  {
+    {
+      auto cfg = _bus_instance.config();
+      cfg.spi_host = SPI2_HOST;
+      cfg.spi_mode = 0;
+      cfg.freq_write = 40000000;
+      cfg.freq_read  = 16000000;
+      cfg.pin_sclk = EPD_SCK;
+      cfg.pin_mosi = EPD_MOSI;
+      cfg.pin_miso = EPD_MISO;
+      cfg.pin_dc   = EPD_DC;
+      _bus_instance.config(cfg);
+      _panel_instance.setBus(&_bus_instance);
+    }
+    {
+      auto cfg = _panel_instance.config();
+      cfg.pin_cs           = EPD_CS;
+      cfg.pin_rst          = EPD_RST;
+      cfg.pin_busy         = -1;
+      cfg.panel_width      = 240;
+      cfg.panel_height     = 320;
+      cfg.offset_x         = 0;
+      cfg.offset_y         = 0;
+      cfg.offset_rotation  = 0;
+      cfg.dummy_read_pixel = 8;
+      cfg.dummy_read_bits  = 1;
+      cfg.readable         = false; // Write-only module
+      cfg.invert           = false;
+      cfg.rgb_order        = false;
+      cfg.dlen_16bit       = false;
+      cfg.bus_shared       = true;
+      _panel_instance.config(cfg);
+    }
+    {
+      auto cfg = _light_instance.config();
+      cfg.pin_bl = EPD_BUSY;
+      cfg.freq   = 12000;
+      cfg.pwm_channel = 1;
+      _light_instance.config(cfg);
+      _panel_instance.setLight(&_light_instance);
+    }
+    setPanel(&_panel_instance);
+  }
+};
+
+LGFX tft;
+bool isTFTMode = false;
+
+// =====================================================================
+// SYSTEM CONFIGURATION STRUCT & LITTLEFS
+// =====================================================================
+struct Config {
+    char wifi_ssid[33] = "";
+    char wifi_pass[65] = "";
+    char mqtt_server[65] = "";
+    int mqtt_port = 1883;
+    char mqtt_user[65] = "";
+    char mqtt_pass[65] = "";
+    char mqtt_device_name[33] = "";
+};
+
+Config sysConfig;
+bool isConfigLoaded = false;
+
+bool loadConfiguration() {
+    if (!LittleFS.begin(true)) {
+        Serial.println("[LittleFS] Mount Failed, formatting filesystem...");
+        return false;
+    }
+    if (!LittleFS.exists("/config.json")) {
+        Serial.println("[LittleFS] Configuration file not found.");
+        return false;
+    }
+    File file = LittleFS.open("/config.json", "r");
+    if (!file) {
+        Serial.println("[LittleFS] Failed to open config file.");
+        return false;
+    }
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, file);
+    file.close();
+    if (error) {
+        Serial.println("[LittleFS] Failed to parse config JSON.");
+        return false;
+    }
+    strlcpy(sysConfig.wifi_ssid, doc["wifi_ssid"] | "", sizeof(sysConfig.wifi_ssid));
+    strlcpy(sysConfig.wifi_pass, doc["wifi_pass"] | "", sizeof(sysConfig.wifi_pass));
+    strlcpy(sysConfig.mqtt_server, doc["mqtt_server"] | "", sizeof(sysConfig.mqtt_server));
+    sysConfig.mqtt_port = doc["mqtt_port"] | 1883;
+    strlcpy(sysConfig.mqtt_user, doc["mqtt_user"] | "", sizeof(sysConfig.mqtt_user));
+    strlcpy(sysConfig.mqtt_pass, doc["mqtt_pass"] | "", sizeof(sysConfig.mqtt_pass));
+    strlcpy(sysConfig.mqtt_device_name, doc["mqtt_device_name"] | "", sizeof(sysConfig.mqtt_device_name));
+    
+    Serial.println("[LittleFS] Configuration successfully loaded.");
+    return true;
+}
+
+bool saveConfiguration() {
+    File file = LittleFS.open("/config.json", "w");
+    if (!file) {
+        Serial.println("[LittleFS] Failed to open config file for writing.");
+        return false;
+    }
+    JsonDocument doc;
+    doc["wifi_ssid"] = sysConfig.wifi_ssid;
+    doc["wifi_pass"] = sysConfig.wifi_pass;
+    doc["mqtt_server"] = sysConfig.mqtt_server;
+    doc["mqtt_port"] = sysConfig.mqtt_port;
+    doc["mqtt_user"] = sysConfig.mqtt_user;
+    doc["mqtt_pass"] = sysConfig.mqtt_pass;
+    doc["mqtt_device_name"] = sysConfig.mqtt_device_name;
+    
+    if (serializeJson(doc, file) == 0) {
+        Serial.println("[LittleFS] Failed to serialize configuration JSON.");
+        file.close();
+        return false;
+    }
+    file.close();
+    Serial.println("[LittleFS] Configuration successfully saved.");
+    return true;
+}
+
+// =====================================================================
+// SENSOR CONFIGURATIONS
+// =====================================================================
+struct TempSensor {
+    enum Type { TYPE_NONE, TYPE_BME280, TYPE_SHT3X } type = TYPE_NONE;
+    uint8_t address = 0;
+    float temperature = NAN;
+    float humidity = NAN;
+    float pressure = NAN; // BME280 only
+    bool active = false;
+    
+    Adafruit_BME280* bme = nullptr;
+    Adafruit_SHT31* sht = nullptr;
+};
+
+TempSensor tempSensors[2];
+int detectedTempSensors = 0;
+
+// Light Sensor State
+bool hasTsl2561 = false;
+uint8_t tsl2561Address = 0;
+Adafruit_TSL2561_Unified* tslSensor = nullptr;
+float currentLux = NAN;
+
+// Potentiometer States
+float potiAVal = 0.0; // Target Humidity: 0 - 100%
+float potiBVal = 0.0; // Gain: 0 - 100%
+float potiCVal = 0.0; // Calibration Offset: -45 to 45 deg
+
+void scanI2C() {
+    Wire.begin(16, 17);
+    Serial.println("[I2C] Scanning bus on SDA=16, SCL=17...");
+    
+    // 1. Scan for temperature/humidity sensors (BME280: 0x76, 0x77 | SHT3x: 0x44, 0x45)
+    uint8_t tempAddresses[] = {0x76, 0x77, 0x44, 0x45};
+    for (uint8_t addr : tempAddresses) {
+        if (detectedTempSensors >= 2) break; // Max 2 sensors
+        
+        Wire.beginTransmission(addr);
+        if (Wire.endTransmission() == 0) {
+            if (addr == 0x76 || addr == 0x77) {
+                Adafruit_BME280* bme = new Adafruit_BME280();
+                if (bme->begin(addr, &Wire)) {
+                    Serial.printf("[I2C] BME280 initialized at address 0x%02X\n", addr);
+                    tempSensors[detectedTempSensors].type = TempSensor::TYPE_BME280;
+                    tempSensors[detectedTempSensors].address = addr;
+                    tempSensors[detectedTempSensors].bme = bme;
+                    tempSensors[detectedTempSensors].active = true;
+                    detectedTempSensors++;
+                } else {
+                    delete bme;
+                }
+            } else if (addr == 0x44 || addr == 0x45) {
+                Adafruit_SHT31* sht = new Adafruit_SHT31();
+                if (sht->begin(addr)) {
+                    Serial.printf("[I2C] SHT3x initialized at address 0x%02X\n", addr);
+                    tempSensors[detectedTempSensors].type = TempSensor::TYPE_SHT3X;
+                    tempSensors[detectedTempSensors].address = addr;
+                    tempSensors[detectedTempSensors].sht = sht;
+                    tempSensors[detectedTempSensors].active = true;
+                    detectedTempSensors++;
+                } else {
+                    delete sht;
+                }
+            }
+        }
+    }
+    
+    // 2. Scan for TSL2561 (Light Sensor: addresses 0x29, 0x39, 0x49)
+    uint8_t tslAddresses[] = {0x29, 0x39, 0x49};
+    for (uint8_t addr : tslAddresses) {
+        Wire.beginTransmission(addr);
+        if (Wire.endTransmission() == 0) {
+            tslSensor = new Adafruit_TSL2561_Unified(addr, 12345);
+            if (tslSensor->begin(&Wire)) {
+                Serial.printf("[I2C] TSL2561 initialized at address 0x%02X\n", addr);
+                tslSensor->enableAutoRange(true);
+                tslSensor->setIntegrationTime(TSL2561_INTEGRATIONTIME_101MS);
+                hasTsl2561 = true;
+                tsl2561Address = addr;
+                break;
+            } else {
+                delete tslSensor;
+                tslSensor = nullptr;
+            }
+        }
+    }
+}
+
+void readSensors() {
+    // Read Temperature & Humidity sensors
+    for (int i = 0; i < 2; i++) {
+        if (tempSensors[i].active) {
+            if (tempSensors[i].type == TempSensor::TYPE_BME280 && tempSensors[i].bme) {
+                tempSensors[i].temperature = tempSensors[i].bme->readTemperature();
+                tempSensors[i].humidity = tempSensors[i].bme->readHumidity();
+                tempSensors[i].pressure = tempSensors[i].bme->readPressure() / 100.0F; // hPa
+            } else if (tempSensors[i].type == TempSensor::TYPE_SHT3X && tempSensors[i].sht) {
+                tempSensors[i].temperature = tempSensors[i].sht->readTemperature();
+                tempSensors[i].humidity = tempSensors[i].sht->readHumidity();
+                tempSensors[i].pressure = NAN;
+            }
+        }
+    }
+
+    // Read Light Sensor
+    if (hasTsl2561 && tslSensor) {
+        sensors_event_t event;
+        tslSensor->getEvent(&event);
+        if (event.light) {
+            currentLux = event.light;
+        } else {
+            currentLux = NAN;
+        }
+    }
+
+    // Read Potentiometers
+    int rawA = analogRead(POTI_A_PIN);
+    int rawB = analogRead(POTI_B_PIN);
+    int rawC = analogRead(POTI_C_PIN);
+
+    potiAVal = (rawA / 4095.0F) * 100.0F; // 0 - 100% Target Humidity
+    potiBVal = (rawB / 4095.0F) * 100.0F; // 0 - 100% Gain
+    potiCVal = map(rawC, 0, 4095, -45, 45); // -45 to 45 degrees Servo calibration
+}
+
+// =====================================================================
+// WIFI CONFIG AP, CAPTIVE PORTAL & REALTIME WEB MONITOR
+// =====================================================================
+WebServer server(80);
+DNSServer dnsServer;
+String apSSID = "";
+const char* apPassword = "growblox";
+bool portalActive = false;
+
+// Generate unique SSID from MAC Address
+void generateUniqueSSID() {
+    String mac = WiFi.macAddress();
+    mac.replace(":", "");
+    String last6 = mac.substring(mac.length() - 6);
+    last6.toUpperCase();
+    apSSID = "IDRY26-" + last6;
+}
+
+// REST API for Real-time monitor updates
+void handleGetData() {
+    JsonDocument doc;
+    doc["device_name"] = sysConfig.mqtt_device_name;
+    doc["ip_address"] = WiFi.localIP().toString();
+    doc["mode"] = isTFTMode ? "TFT Mode" : "e-Paper Mode";
+
+    JsonArray sensors = doc["sensors"].to<JsonArray>();
+    for (int i = 0; i < 2; i++) {
+        if (tempSensors[i].active) {
+            JsonObject s = sensors.add<JsonObject>();
+            s["type"] = (tempSensors[i].type == TempSensor::TYPE_BME280) ? "BME280" : "SHT3x";
+            char addrHex[8];
+            sprintf(addrHex, "0x%02X", tempSensors[i].address);
+            s["address"] = addrHex;
+            s["temperature"] = isnan(tempSensors[i].temperature) ? JsonVariant() : tempSensors[i].temperature;
+            s["humidity"] = isnan(tempSensors[i].humidity) ? JsonVariant() : tempSensors[i].humidity;
+            s["pressure"] = isnan(tempSensors[i].pressure) ? JsonVariant() : tempSensors[i].pressure;
+        }
+    }
+
+    if (hasTsl2561) {
+        JsonObject light = doc["light"].to<JsonObject>();
+        light["type"] = "TSL2561";
+        char addrHex[8];
+        sprintf(addrHex, "0x%02X", tsl2561Address);
+        light["address"] = addrHex;
+        light["lux"] = isnan(currentLux) ? JsonVariant() : currentLux;
+    }
+
+    JsonObject potis = doc["potentiometers"].to<JsonObject>();
+    potis["poti_a_target_hum"] = potiAVal;
+    potis["poti_b_gain"] = potiBVal;
+    potis["poti_c_cal_offset"] = potiCVal;
+
+    doc["rssi"] = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
+
+    String jsonResponse;
+    serializeJson(doc, jsonResponse);
+    server.send(200, "application/json", jsonResponse);
+}
+
+// Config page when in AP mode, Dashboard when in Station mode
+void handlePortalRoot() {
+    if (WiFi.status() == WL_CONNECTED && !portalActive) {
+        // Show Real-time Sensor Dashboard
+        String html = R"rawhtml(
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IDRY-26 Dashboard</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body {
+            background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+            color: #f8fafc;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: rgba(30, 41, 59, 0.45);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            padding: 30px;
+            width: 100%;
+            max-width: 650px;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+        }
+        h1 { text-align: center; margin-bottom: 25px; font-size: 24px; font-weight: 600; letter-spacing: 1px; color: #818cf8; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+        @media(max-width: 500px) { .grid { grid-template-columns: 1fr; } }
+        .card {
+            background: rgba(15, 23, 42, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 20px;
+        }
+        .card-title { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: #94a3b8; margin-bottom: 12px; font-weight: bold; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 5px; }
+        .value-row { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 15px; }
+        .value-row:last-child { margin-bottom: 0; }
+        .val { font-weight: 600; color: #38bdf8; }
+        .footer { text-align: center; margin-top: 20px; font-size: 11px; color: #64748b; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 id="device-title">IDRY-26 Loading...</h1>
+        <div class="grid">
+            <div class="card" id="sensor-card-0" style="display:none;">
+                <div class="card-title" id="sensor-title-0">Sensor 1</div>
+                <div class="value-row"><span>Temperatur:</span><span class="val" id="temp-0">--</span></div>
+                <div class="value-row"><span>Feuchtigkeit:</span><span class="val" id="hum-0">--</span></div>
+                <div class="value-row" id="press-row-0"><span>Luftdruck:</span><span class="val" id="press-0">--</span></div>
+            </div>
+            <div class="card" id="sensor-card-1" style="display:none;">
+                <div class="card-title" id="sensor-title-1">Sensor 2</div>
+                <div class="value-row"><span>Temperatur:</span><span class="val" id="temp-1">--</span></div>
+                <div class="value-row"><span>Feuchtigkeit:</span><span class="val" id="hum-1">--</span></div>
+                <div class="value-row" id="press-row-1"><span>Luftdruck:</span><span class="val" id="press-1">--</span></div>
+            </div>
+            <div class="card" id="light-card" style="display:none;">
+                <div class="card-title" id="light-title">TSL2561 Helligkeit</div>
+                <div class="value-row"><span>Beleuchtungsstärke:</span><span class="val" id="lux-val">--</span></div>
+            </div>
+            <div class="card">
+                <div class="card-title">Potentiometer</div>
+                <div class="value-row"><span>Sollwert Feuchte (A):</span><span class="val" id="poti-a">--</span></div>
+                <div class="value-row"><span>Gain Faktor (B):</span><span class="val" id="poti-b">--</span></div>
+                <div class="value-row"><span>Kalibrierungs-Offset (C):</span><span class="val" id="poti-c">--</span></div>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-title">System Status</div>
+            <div class="value-row"><span>IP-Adresse:</span><span class="val" id="sys-ip">--</span></div>
+            <div class="value-row"><span>Anzeige-Modus:</span><span class="val" id="sys-mode">--</span></div>
+            <div class="value-row"><span>Signalstärke RSSI:</span><span class="val" id="sys-rssi">--</span></div>
+        </div>
+        <div class="footer">IDRY26 Live Monitor</div>
+    </div>
+    <script>
+        function updateData() {
+            fetch('/api/data')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('device-title').innerText = data.device_name;
+                    document.getElementById('sys-ip').innerText = data.ip_address;
+                    document.getElementById('sys-mode').innerText = data.mode;
+                    document.getElementById('sys-rssi').innerText = data.rssi + " dBm";
+
+                    // Update temperature sensors
+                    for (let i = 0; i < 2; i++) {
+                        let card = document.getElementById('sensor-card-' + i);
+                        if (data.sensors && data.sensors[i]) {
+                            card.style.display = 'block';
+                            document.getElementById('sensor-title-' + i).innerText = data.sensors[i].type + " (" + data.sensors[i].address + ")";
+                            document.getElementById('temp-' + i).innerText = data.sensors[i].temperature !== null ? data.sensors[i].temperature.toFixed(1) + " °C" : "--";
+                            document.getElementById('hum-' + i).innerText = data.sensors[i].humidity !== null ? data.sensors[i].humidity.toFixed(1) + " %" : "--";
+                            if (data.sensors[i].pressure !== null) {
+                                document.getElementById('press-row-' + i).style.display = 'flex';
+                                document.getElementById('press-' + i).innerText = data.sensors[i].pressure.toFixed(1) + " hPa";
+                            } else {
+                                document.getElementById('press-row-' + i).style.display = 'none';
+                            }
+                        } else {
+                            card.style.display = 'none';
+                        }
+                    }
+
+                    // Update light sensor
+                    let lightCard = document.getElementById('light-card');
+                    if (data.light) {
+                        lightCard.style.display = 'block';
+                        document.getElementById('light-title').innerText = "TSL2561 (" + data.light.address + ")";
+                        document.getElementById('lux-val').innerText = data.light.lux !== null ? data.light.lux.toFixed(1) + " Lux" : "--";
+                    } else {
+                        lightCard.style.display = 'none';
+                    }
+
+                    // Update potentiometers
+                    document.getElementById('poti-a').innerText = data.potentiometers.poti_a_target_hum.toFixed(1) + " %";
+                    document.getElementById('poti-b').innerText = data.potentiometers.poti_b_gain.toFixed(1) + " %";
+                    document.getElementById('poti-c').innerText = data.potentiometers.poti_c_cal_offset.toFixed(0) + " °";
+                });
+        }
+        setInterval(updateData, 1000);
+        updateData();
+    </script>
+</body>
+</html>
+)rawhtml";
+        server.send(200, "text/html", html);
+    } else {
+        // Show Wi-Fi setup captive portal
+        int n = WiFi.scanNetworks();
+        String wifiOptions = "";
+        for (int i = 0; i < n; ++i) {
+            wifiOptions += "<option value=\"" + WiFi.SSID(i) + "\">" + WiFi.SSID(i) + " (" + String(WiFi.RSSI(i)) + " dBm)</option>";
+        }
+
+        String html = R"rawhtml(
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IDRY-26 Device Setup</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body {
+            background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+            color: #f8fafc;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: rgba(30, 41, 59, 0.45);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            padding: 30px;
+            width: 100%;
+            max-width: 500px;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+        }
+        h1 { text-align: center; margin-bottom: 25px; font-size: 24px; font-weight: 600; letter-spacing: 1px; color: #818cf8; }
+        .section-title { font-size: 14px; text-transform: uppercase; letter-spacing: 2px; color: #94a3b8; margin: 15px 0 10px 0; font-weight: bold; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 5px;}
+        .form-group { margin-bottom: 18px; }
+        label { display: block; font-size: 13px; color: #cbd5e1; margin-bottom: 6px; }
+        input, select {
+            width: 100%;
+            padding: 12px 16px;
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            color: white;
+            font-size: 14px;
+            outline: none;
+        }
+        input:focus, select:focus { border-color: #6366f1; }
+        .btn {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+            border: none;
+            border-radius: 10px;
+            color: white;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        .footer { text-align: center; margin-top: 20px; font-size: 11px; color: #64748b; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>IDRY-26 Configuration</h1>
+        <form action="/save" method="POST">
+            <div class="section-title">Wi-Fi Verbindung</div>
+            <div class="form-group">
+                <label for="ssid">Netzwerk (SSID)</label>
+                <select name="ssid" id="ssid">
+                    <option value="">Wähle ein Netzwerk...</option>
+)rawhtml";
+        html += wifiOptions;
+        html += R"rawhtml(
+                </select>
+                <input type="text" name="ssid_custom" placeholder="Oder manuell eingeben..." style="margin-top: 8px;">
+            </div>
+            <div class="form-group">
+                <label for="pass">Wi-Fi Passwort</label>
+                <input type="password" name="pass" id="pass" placeholder="Passwort eingeben">
+            </div>
+
+            <div class="section-title">MQTT Konfiguration</div>
+            <div class="form-group">
+                <label for="mqtt_server">MQTT Broker Adresse</label>
+                <input type="text" name="mqtt_server" id="mqtt_server" placeholder="z.B. 192.168.1.100" required>
+            </div>
+            <div class="form-group">
+                <label for="mqtt_port">MQTT Port</label>
+                <number name="mqtt_port" id="mqtt_port" value="1883" required>
+            </div>
+            <div class="form-group">
+                <label for="mqtt_user">MQTT Benutzername (optional)</label>
+                <input type="text" name="mqtt_user" id="mqtt_user" placeholder="Benutzername">
+            </div>
+            <div class="form-group">
+                <label for="mqtt_pass">MQTT Passwort (optional)</label>
+                <input type="password" name="mqtt_pass" id="mqtt_pass" placeholder="Passwort">
+            </div>
+            <div class="form-group">
+                <label for="mqtt_device">Gerätename in Home Assistant</label>
+                <input type="text" name="mqtt_device" id="mqtt_device" placeholder="z.B. growbox_display">
+            </div>
+
+            <button type="submit" class="btn">Speichern & Verbinden</button>
+        </form>
+        <div class="footer">IDRY26 IoT Device Config Portal</div>
+    </div>
+</body>
+</html>
+)rawhtml";
+        server.send(200, "text/html", html);
+    }
+}
+
+void handlePortalSave() {
+    String ssid = server.arg("ssid");
+    String custom_ssid = server.arg("ssid_custom");
+    if (custom_ssid.length() > 0) {
+        ssid = custom_ssid;
+    }
+    String pass = server.arg("pass");
+    String mqtt_server = server.arg("mqtt_server");
+    int mqtt_port = server.arg("mqtt_port").toInt();
+    String mqtt_user = server.arg("mqtt_user");
+    String mqtt_pass = server.arg("mqtt_pass");
+    String mqtt_device = server.arg("mqtt_device");
+
+    strlcpy(sysConfig.wifi_ssid, ssid.c_str(), sizeof(sysConfig.wifi_ssid));
+    strlcpy(sysConfig.wifi_pass, pass.c_str(), sizeof(sysConfig.wifi_pass));
+    strlcpy(sysConfig.mqtt_server, mqtt_server.c_str(), sizeof(sysConfig.mqtt_server));
+    sysConfig.mqtt_port = (mqtt_port > 0) ? mqtt_port : 1883;
+    strlcpy(sysConfig.mqtt_user, mqtt_user.c_str(), sizeof(sysConfig.mqtt_user));
+    strlcpy(sysConfig.mqtt_pass, mqtt_pass.c_str(), sizeof(sysConfig.mqtt_pass));
+    
+    if (mqtt_device.length() > 0) {
+        strlcpy(sysConfig.mqtt_device_name, mqtt_device.c_str(), sizeof(sysConfig.mqtt_device_name));
+    } else {
+        strlcpy(sysConfig.mqtt_device_name, apSSID.c_str(), sizeof(sysConfig.mqtt_device_name));
+    }
+
+    saveConfiguration();
+
+    String html = R"rawhtml(
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Einstellungen gespeichert</title>
+    <style>
+        body { background: #0f172a; color: white; text-align: center; padding-top: 100px; font-family: sans-serif; }
+        .box { background: #1e293b; padding: 40px; border-radius: 15px; display: inline-block; }
+        h1 { color: #818cf8; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h1>Einstellungen gespeichert!</h1>
+        <p>Der ESP32 startet nun neu und verbindet sich mit <strong>)rawhtml";
+    html += ssid + R"rawhtml(</strong>.</p>
+        <p>Bitte verbinde dein Gerät wieder mit deinem Heimnetzwerk.</p>
+    </div>
+    <script>setTimeout(function(){ window.location.href = '/'; }, 5000);</script>
+</body>
+</html>
+)rawhtml";
+    server.send(200, "text/html", html);
+    delay(2000);
+    ESP.restart();
+}
+
+void startCaptivePortal() {
+    portalActive = true;
+    generateUniqueSSID();
+    
+    Serial.println("\n--- WiFi / MQTT Portal Mode ---");
+    Serial.printf("Config SSID: %s\n", apSSID.c_str());
+    
+    // Shut down E-ink display power draw before activating SoftAP
+    if (!isTFTMode) {
+        Serial.println("[Power] Powering off E-Ink display to stabilize voltage for SoftAP...");
+        display.powerOff();
+    }
+    delay(500); // Allow LDO voltage rail to recover and settle
+
+    // Stop background STA connection scanning to prevent AP signal disruption
+    WiFi.persistent(false); // Prevent NVS flash writes which can corrupt Wi-Fi driver state
+    WiFi.setAutoReconnect(false);
+    WiFi.disconnect(true); 
+    WiFi.softAPdisconnect(true);
+    delay(200);
+
+    WiFi.mode(WIFI_AP);
+    WiFi.setSleep(false); // Disable sleep mode to prevent transmitter power-down
+    
+    // Force maximum RF transmission power (19.5dBm)
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
+    delay(200);
+    
+    // Start SoftAP on Channel 6 (standard stable channel, visible, max 4 clients)
+    bool ok = WiFi.softAP(apSSID.c_str(), apPassword, 6, 0, 4);
+    
+    // Diagnostic Prints
+    Serial.printf("[AP Debug] softAP startup return: %s\n", ok ? "SUCCESS" : "FAILED");
+    Serial.printf("[AP Debug] Current WiFi Mode: %d (1=STA, 2=AP, 3=AP_STA)\n", (int)WiFi.getMode());
+    Serial.printf("[AP Debug] SoftAP IP Address: %s\n", WiFi.softAPIP().toString().c_str());
+    Serial.printf("[AP Debug] Target SSID: %s (Channel 6)\n", apSSID.c_str());
+    Serial.printf("[AP Debug] Target Password: %s\n", apPassword);
+    Serial.printf("[AP Debug] TX Power Level: %d\n", (int)WiFi.getTxPower());
+    
+    dnsServer.start(53, "*", WiFi.softAPIP());
+    
+    server.on("/", handlePortalRoot);
+    server.on("/save", handlePortalSave);
+    server.on("/api/data", handleGetData);
+    server.onNotFound(handlePortalRoot);
+    server.begin();
+}
+
+// =====================================================================
+// DISPLAY VISUAL FEEDBACK (DURING BOOT)
+// =====================================================================
+void updateBootScreen(const char* line1, const char* line2) {
+    if (isTFTMode) {
+        tft.startWrite();
+        tft.clear(TFT_NAVY);
+        tft.setTextColor(TFT_WHITE);
+        tft.setTextSize(2);
+        tft.setCursor(15, 40);
+        tft.print("Boot System...");
+        
+        tft.setTextColor(TFT_YELLOW);
+        tft.setCursor(15, 90);
+        tft.print(line1);
+
+        tft.setTextColor(TFT_CYAN);
+        tft.setCursor(15, 140);
+        tft.print(line2);
+        tft.endWrite();
+    } else {
+        display.setRotation(1);
+        display.setFont(&::FreeMonoBold9pt7b);
+        display.firstPage();
+        do {
+            display.fillScreen(GxEPD_WHITE);
+            display.drawRect(0, 0, display.width(), display.height(), GxEPD_BLACK);
+            display.drawRect(4, 4, display.width() - 8, display.height() - 8, GxEPD_RED);
+            
+            display.setTextColor(GxEPD_BLACK);
+            display.setCursor(20, 50);
+            display.print("IDRY26 Bootstrap Config");
+            
+            display.setTextColor(GxEPD_RED);
+            display.setCursor(20, 100);
+            display.print(line1);
+            
+            display.setTextColor(GxEPD_BLACK);
+            display.setCursor(20, 150);
+            display.print(line2);
+        } while (display.nextPage());
+    }
+}
+
+// =====================================================================
+// MQTT CLIENT & HA AUTO-DISCOVERY SETUP
+// =====================================================================
+WiFiClient espClient;
+PubSubClient mqttClient(espClient);
+String baseTopic = "";
+String stateTopic = "";
+
+void sendHADiscoveryConfig(const char* sensorName, const char* displayName, const char* unit, const char* icon, const char* deviceClass) {
+    String discoveryTopic = "homeassistant/sensor/" + String(sysConfig.mqtt_device_name) + "/" + String(sensorName) + "/config";
+    JsonDocument doc;
+    doc["name"] = displayName;
+    doc["state_topic"] = stateTopic;
+    doc["value_template"] = "{{ value_json." + String(sensorName) + " }}";
+    doc["unique_id"] = String(sysConfig.mqtt_device_name) + "_" + String(sensorName);
+    
+    if (unit && strlen(unit) > 0) doc["unit_of_measurement"] = unit;
+    if (icon && strlen(icon) > 0) doc["icon"] = icon;
+    if (deviceClass && strlen(deviceClass) > 0) doc["device_class"] = deviceClass;
+
+    JsonObject dev = doc["device"].to<JsonObject>();
+    dev["identifiers"][0] = String(sysConfig.mqtt_device_name);
+    dev["name"] = String(sysConfig.mqtt_device_name);
+    dev["model"] = "IDRY-26 Multi-Sensor Display";
+    dev["sw_version"] = "2026.07.02";
+    dev["manufacturer"] = "Growblox";
+
+    String payload;
+    serializeJson(doc, payload);
+    mqttClient.publish(discoveryTopic.c_str(), payload.c_str(), true);
+}
+
+void registerHomeAssistantDevices() {
+    Serial.println("[MQTT] Registering entities via HA Auto-Discovery...");
+    
+    // Register active temperature sensors dynamically
+    for (int i = 0; i < 2; i++) {
+        if (tempSensors[i].active) {
+            String idStr = "sensor_" + String(i);
+            String nameStr = String((tempSensors[i].type == TempSensor::TYPE_BME280) ? "BME280" : "SHT3x") + " (" + String(i + 1) + ")";
+            
+            sendHADiscoveryConfig((idStr + "_temp").c_str(), (nameStr + " Temp").c_str(), "°C", "mdi:thermometer", "temperature");
+            sendHADiscoveryConfig((idStr + "_hum").c_str(), (nameStr + " Feuchte").c_str(), "%", "mdi:water-percent", "humidity");
+            
+            if (tempSensors[i].type == TempSensor::TYPE_BME280) {
+                sendHADiscoveryConfig((idStr + "_press").c_str(), (nameStr + " Druck").c_str(), "hPa", "mdi:gauge", "pressure");
+            }
+        }
+    }
+
+    if (hasTsl2561) {
+        sendHADiscoveryConfig("light_lux", "TSL2561 Helligkeit", "lx", "mdi:weather-sunny", "illuminance");
+    }
+
+    sendHADiscoveryConfig("poti_a", "Poti A (Sollwert)", "%", "mdi:knob", "");
+    sendHADiscoveryConfig("poti_b", "Poti B (Gain)", "%", "mdi:knob", "");
+    sendHADiscoveryConfig("poti_c", "Poti C (Cal Offset)", "°", "mdi:knob", "");
+    sendHADiscoveryConfig("linkquality", "Signalstärke", "lqi", "mdi:signal", "");
+}
+
+// =====================================================================
+// AUTO-DETECTION VIA RESET-INDUCED STATE CHANGE
+// =====================================================================
+bool detectDisplayType() {
+    Serial.println("[Auto-Detect] Starting Reset line state-change diagnostics...");
+    pinMode(EPD_BUSY, INPUT_PULLDOWN);
+    
+    pinMode(EPD_RST, OUTPUT);
+    digitalWrite(EPD_RST, HIGH);
+    delay(10);
+    int busy_rst_high_before = digitalRead(EPD_BUSY);
+
+    digitalWrite(EPD_RST, LOW);
+    delay(20); 
+    int busy_rst_low = digitalRead(EPD_BUSY);
+
+    digitalWrite(EPD_RST, HIGH);
+    delay(10);
+
+    if (busy_rst_high_before != busy_rst_low) {
+        Serial.println("[Auto-Detect] Result: e-Paper Display detected (BUSY state change active)");
+        return false;
+    } else {
+        Serial.println("[Auto-Detect] Result: ILI9341 TFT Display detected (No BUSY state change)");
+        return true;
+    }
+}
+
+void setup() {
+    Serial.begin(115200);
+    delay(2000);
+    Serial.println("\n=== Multi-Display Bootstrap Boot ===");
+
+    // Perform display type autodetect
+    isTFTMode = detectDisplayType();
+
+    // Fast-boot active display driver
+    if (isTFTMode) {
+        Serial.println("Starting TFT Mode (LovyanGFX)...");
+        tft.init();
+        tft.setRotation(1); 
+        tft.setBrightness(204); // 80% Backlight PWM
+        tft.clear(TFT_NAVY);
+    } else {
+        Serial.println("Starting e-Paper Mode (GxEPD2)...");
+        pinMode(EPD_BUSY, INPUT_PULLUP);
+        SPI.begin(EPD_SCK, EPD_MISO, EPD_MOSI, -1);
+        display.init(115200, true, 2, false);
+        SPI.begin(EPD_SCK, EPD_MISO, EPD_MOSI, -1);
+        pinMode(EPD_CS, OUTPUT);
+        digitalWrite(EPD_CS, HIGH);
+    }
+
+    // Load Configuration
+    isConfigLoaded = loadConfiguration();
+    
+    if (isConfigLoaded && strlen(sysConfig.wifi_ssid) > 0) {
+        Serial.printf("[WLAN] Connecting to: %s\n", sysConfig.wifi_ssid);
+        updateBootScreen("WLAN Verbinden...", sysConfig.wifi_ssid);
+
+        WiFi.persistent(false); // Prevent flash wear and config corruption
+        WiFi.disconnect(false); // DO NOT turn off the radio!
+        WiFi.mode(WIFI_OFF);
+        delay(200);
+        WiFi.mode(WIFI_STA);
+        WiFi.setSleep(false); // Disable power-save mode for maximum RF stability/speed
+        delay(200);
+        WiFi.begin(sysConfig.wifi_ssid, sysConfig.wifi_pass);
+
+        // Timeout verification (Wait 15 seconds maximum)
+        unsigned long connStart = millis();
+        bool isConnected = false;
+        while (millis() - connStart < 15000) {
+            if (WiFi.status() == WL_CONNECTED) {
+                isConnected = true;
+                break;
+            }
+            delay(100);
+        }
+
+        if (isConnected) {
+            Serial.printf("[WLAN] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+            updateBootScreen("WLAN Verbunden!", WiFi.localIP().toString().c_str());
+            
+            // Scan I2C Devices
+            scanI2C();
+
+            // Web Server Init (Real-time monitor)
+            server.on("/", handlePortalRoot);
+            server.on("/api/data", handleGetData);
+            server.begin();
+
+            // Setup MQTT Settings
+            mqttClient.setServer(sysConfig.mqtt_server, sysConfig.mqtt_port);
+            baseTopic = "idry/" + String(sysConfig.mqtt_device_name);
+            stateTopic = baseTopic + "/state";
+            
+            delay(1000);
+        } else {
+            Serial.println("[WLAN] Connection timed out! Launching Captive Config Portal...");
+            updateBootScreen("WLAN Timeout!", "Starte Portal...");
+            delay(1000);
+            startCaptivePortal();
+        }
+    } else {
+        Serial.println("[WLAN] No configuration stored. Starting Captive Config Portal...");
+        updateBootScreen("Kein Setup!", "Starte Portal...");
+        delay(1000);
+        startCaptivePortal();
+    }
+}
+
+void loop() {
+    if (portalActive) {
+        dnsServer.processNextRequest();
+        server.handleClient();
+        return;
+    }
+
+    server.handleClient();
+
+    // Connect / Maintain MQTT Connection
+    if (WiFi.status() == WL_CONNECTED) {
+        if (!mqttClient.connected()) {
+            Serial.println("[MQTT] Connecting to broker...");
+            String clientID = String(sysConfig.mqtt_device_name) + "-" + String(random(0xffff), HEX);
+            
+            bool mqttConnected = false;
+            if (strlen(sysConfig.mqtt_user) > 0) {
+                mqttConnected = mqttClient.connect(clientID.c_str(), sysConfig.mqtt_user, sysConfig.mqtt_pass);
+            } else {
+                mqttConnected = mqttClient.connect(clientID.c_str());
+            }
+
+            if (mqttConnected) {
+                Serial.println("[MQTT] Broker Connected!");
+                registerHomeAssistantDevices();
+            } else {
+                Serial.printf("[MQTT] Connection failed, rc=%d. Retrying in next loop.\n", mqttClient.state());
+            }
+        }
+        mqttClient.loop();
+    }
+
+    static unsigned long lastUpdate = 0;
+    static int updateCount = 0;
+    
+    // Run Display and Sensor Loop every 1 second
+    unsigned long interval = 1000;
+    
+    if (millis() - lastUpdate >= interval) {
+        lastUpdate = millis();
+        updateCount++;
+
+        // Read real sensors
+        readSensors();
+
+        // Publish to MQTT State every 10 seconds (or on change)
+        if (updateCount % 10 == 0 && mqttClient.connected()) {
+            JsonDocument doc;
+            
+            for (int i = 0; i < 2; i++) {
+                if (tempSensors[i].active) {
+                    String idStr = "sensor_" + String(i);
+                    doc[idStr + "_temp"] = isnan(tempSensors[i].temperature) ? JsonVariant() : tempSensors[i].temperature;
+                    doc[idStr + "_hum"] = isnan(tempSensors[i].humidity) ? JsonVariant() : tempSensors[i].humidity;
+                    if (tempSensors[i].type == TempSensor::TYPE_BME280) {
+                        doc[idStr + "_press"] = isnan(tempSensors[i].pressure) ? JsonVariant() : tempSensors[i].pressure;
+                    }
+                }
+            }
+
+            if (hasTsl2561) {
+                doc["light_lux"] = isnan(currentLux) ? JsonVariant() : currentLux;
+            }
+
+            doc["poti_a"] = potiAVal;
+            doc["poti_b"] = potiBVal;
+            doc["poti_c"] = potiCVal;
+            doc["linkquality"] = (WiFi.status() == WL_CONNECTED) ? map(WiFi.RSSI(), -100, -30, 0, 255) : 0;
+            
+            String statePayload;
+            serializeJson(doc, statePayload);
+            mqttClient.publish(stateTopic.c_str(), statePayload.c_str());
+            Serial.println("[MQTT] Published live sensor state data.");
+        }
+
+        if (isTFTMode) {
+            // --- NATIVE TFT INTERFACE (Outlined UI with font size 1 for compact display) ---
+            tft.startWrite();
+            tft.clear(TFT_BLACK);
+            
+            tft.drawRect(0, 0, tft.width(), tft.height(), TFT_GREEN);
+            tft.drawRect(4, 4, tft.width()-8, tft.height()-8, TFT_BLUE);
+            
+            // Header (size 2)
+            tft.setTextColor(TFT_YELLOW);
+            tft.setTextSize(2);
+            tft.setCursor(15, 20);
+            tft.printf(sysConfig.mqtt_device_name);
+            
+            tft.setTextColor(TFT_WHITE);
+            tft.setTextSize(1);
+            tft.setCursor(15, 50);
+            tft.printf("IP: %s", WiFi.localIP().toString().c_str());
+
+            // Details section (size 1)
+            int cursorY = 70;
+            tft.setTextColor(TFT_ORANGE);
+            
+            for (int i = 0; i < 2; i++) {
+                if (tempSensors[i].active) {
+                    tft.setCursor(15, cursorY);
+                    String sType = (tempSensors[i].type == TempSensor::TYPE_BME280) ? "BME280" : "SHT3x";
+                    tft.printf("%s [0x%02X]: %.1f C, %.1f %%", sType.c_str(), tempSensors[i].address, tempSensors[i].temperature, tempSensors[i].humidity);
+                    cursorY += 20;
+                    if (tempSensors[i].type == TempSensor::TYPE_BME280) {
+                        tft.setCursor(15, cursorY);
+                        tft.printf("  Druck: %.1f hPa", tempSensors[i].pressure);
+                        cursorY += 20;
+                    }
+                }
+            }
+
+            if (hasTsl2561) {
+                tft.setTextColor(TFT_CYAN);
+                tft.setCursor(15, cursorY);
+                tft.printf("TSL2561 [0x%02X]: %.1f Lux", tsl2561Address, currentLux);
+                cursorY += 20;
+            }
+
+            tft.setTextColor(TFT_GREEN);
+            tft.setCursor(15, cursorY);
+            tft.printf("Poti A (Sollwert): %.1f %%", potiAVal);
+            cursorY += 15;
+            tft.setCursor(15, cursorY);
+            tft.printf("Poti B (Gain):     %.1f %%", potiBVal);
+            cursorY += 15;
+            tft.setCursor(15, cursorY);
+            tft.printf("Poti C (Cal Off):  %.0f Grad", potiCVal);
+            
+            // Dynamic activity dot
+            tft.fillCircle(210, 20, 6, tft.color888(random(255), random(255), random(255)));
+
+            tft.endWrite();
+        } else {
+            // --- NATIVE E-PAPER INTERFACE (Refreshed every 10 loop cycles to prevent burnout) ---
+            if (updateCount % 10 == 0) {
+                Serial.println("[e-Paper] Re-drawing screen...");
+                display.setRotation(1);
+                display.setFont(&::FreeMonoBold9pt7b);
+                
+                display.firstPage();
+                do {
+                    display.fillScreen(GxEPD_WHITE);
+                    display.drawRect(0, 0, display.width(), display.height(), GxEPD_BLACK);
+                    display.drawRect(4, 4, display.width() - 8, display.height() - 8, GxEPD_RED);
+
+                    // Title
+                    display.setTextColor(GxEPD_BLACK);
+                    display.setCursor(15, 30);
+                    display.printf("%s E-Ink", sysConfig.mqtt_device_name);
+                    
+                    int epY = 60;
+                    for (int i = 0; i < 2; i++) {
+                        if (tempSensors[i].active) {
+                            display.setCursor(15, epY);
+                            String sType = (tempSensors[i].type == TempSensor::TYPE_BME280) ? "BME280" : "SHT3x";
+                            display.printf("%s: %.1fC %.1f%%", sType.c_str(), tempSensors[i].temperature, tempSensors[i].humidity);
+                            epY += 30;
+                        }
+                    }
+
+                    if (hasTsl2561) {
+                        display.setTextColor(GxEPD_RED);
+                        display.setCursor(15, epY);
+                        display.printf("Licht: %.1f Lux", currentLux);
+                        epY += 30;
+                    }
+
+                    display.setTextColor(GxEPD_BLACK);
+                    display.setCursor(15, epY);
+                    display.printf("A:%.0f%% B:%.0f%% C:%.0f", potiAVal, potiBVal, potiCVal);
+                    
+                } while (display.nextPage());
+            }
+        }
+    }
+}

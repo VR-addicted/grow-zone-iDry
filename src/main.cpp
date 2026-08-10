@@ -1,0 +1,3616 @@
+#include <Arduino.h>
+#include <Fonts/FreeMonoBold9pt7b.h>
+#include <GxEPD2_3C.h>
+#include <SPI.h>
+#include <Wire.h>
+#define LGFX_USE_V1
+#include <ArduinoJson.h>
+#include <DNSServer.h>
+#include <LittleFS.h>
+#include <LovyanGFX.hpp>
+#include <PubSubClient.h>
+#include <WebServer.h>
+#include <WiFi.h>
+#include <esp_now.h>
+#include <esp_wifi.h>
+
+// Sensor Libraries
+#include <Adafruit_BME280.h>
+#include <Adafruit_SHT31.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_TSL2561_U.h>
+
+// --- PIN DEFINITIONS ---
+#define EPD_SCK 12
+#define EPD_MOSI 11
+#define EPD_MISO 13
+#define EPD_CS 10
+#define EPD_DC 9
+#define EPD_RST 14
+#define EPD_BUSY 8
+
+// Poti Analog Pins
+#define POTI_A_PIN 4 // Target Humidity
+#define POTI_B_PIN 5 // Gain
+#define POTI_C_PIN 1 // Servo Calibration Offset
+
+// Servo Configuration
+#define SERVO_PIN 18
+#define SERVO_LEDC_CHANNEL 2
+
+// Buzzer Configuration
+#define BUZZER_PIN 17
+
+// =====================================================================
+// SELECT DRIVER CLASS (3-Colour driver class hacked to 240x360)
+// =====================================================================
+#define DRIVER_CLASS GxEPD2_213_Z19c
+
+// Instantiate the working 3-colour display wrapper
+GxEPD2_3C<DRIVER_CLASS, DRIVER_CLASS::HEIGHT>
+    display(DRIVER_CLASS(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
+
+// =====================================================================
+// LOVYANGFX ILI9341 PANEL CONFIGURATION
+// =====================================================================
+class LGFX : public lgfx::LGFX_Device {
+  lgfx::Bus_SPI _bus_instance;
+  lgfx::Panel_ILI9341 _panel_instance;
+  lgfx::Light_PWM _light_instance;
+
+public:
+  LGFX(void) {
+    {
+      auto cfg = _bus_instance.config();
+      cfg.spi_host = SPI2_HOST;
+      cfg.spi_mode = 0;
+      cfg.freq_write = 40000000;
+      cfg.freq_read = 16000000;
+      cfg.pin_sclk = EPD_SCK;
+      cfg.pin_mosi = EPD_MOSI;
+      cfg.pin_miso = EPD_MISO;
+      cfg.pin_dc = EPD_DC;
+      _bus_instance.config(cfg);
+      _panel_instance.setBus(&_bus_instance);
+    }
+    {
+      auto cfg = _panel_instance.config();
+      cfg.pin_cs = EPD_CS;
+      cfg.pin_rst = EPD_RST;
+      cfg.pin_busy = -1;
+      cfg.panel_width = 240;
+      cfg.panel_height = 320;
+      cfg.offset_x = 0;
+      cfg.offset_y = 0;
+      cfg.offset_rotation = 0;
+      cfg.dummy_read_pixel = 8;
+      cfg.dummy_read_bits = 1;
+      cfg.readable = false; // Write-only module
+      cfg.invert = false;
+      cfg.rgb_order = false;
+      cfg.dlen_16bit = false;
+      cfg.bus_shared = true;
+      _panel_instance.config(cfg);
+    }
+    {
+      auto cfg = _light_instance.config();
+      cfg.pin_bl = EPD_BUSY;
+      cfg.freq = 12000;
+      cfg.pwm_channel = 1;
+      _light_instance.config(cfg);
+      _panel_instance.setLight(&_light_instance);
+    }
+    setPanel(&_panel_instance);
+  }
+};
+
+LGFX tft;
+bool isTFTMode = false;
+bool isHeadless = false;
+
+// Global MQTT Client definitions (declared early for scope access)
+WiFiClient espClient;
+PubSubClient mqttClient(espClient);
+String baseTopic = "";
+String stateTopic = "";
+
+// =====================================================================
+// SYSTEM CONFIGURATION STRUCT & LITTLEFS
+// =====================================================================
+struct Config {
+  char wifi_ssid[33] = "";
+  char wifi_pass[65] = "";
+  char mqtt_server[65] = "";
+  int mqtt_port = 1883;
+  char mqtt_user[65] = "";
+  char mqtt_pass[65] = "";
+  char mqtt_device_name[33] = "";
+  int mqtt_report_interval = 5; // Publish interval in minutes (1 to 60)
+  int display_brightness = 80;   // Display brightness percentage (0 to 100%)
+  int wifi_tx_power = 52;        // WiFi TX Power limit (default 13dBm, WIFI_POWER_13dBm = 52)
+  int espnow_role = 0;           // 0 = Disabled, 1 = Master, 2 = Slave
+  int espnow_channel = 1;        // Manual channel for Slave (1 to 13)
+  char espnow_peer_mac[18] = ""; // Target controller MAC address (XX:XX:XX:XX:XX:XX)
+  char espnow_lmk[33] = "";      // Local Master Key for hardware encryption (hex string)
+  int servo_update_interval = 5; // Servo update rate limit interval in seconds (1 to 30)
+  int wlan_time_trap = 120;      // WLAN connection watchdog timeout in seconds (0 = disabled, 1 to 330)
+  int espnow_failsafe_mode = 0;  // Slave fail-safe mode on connection loss: 0 = 50% Safety Open, 1 = Local Control
+};
+
+Config sysConfig;
+bool isConfigLoaded = false;
+
+// Potentiometer States
+float potiAVal = 0.0;      // Target Humidity: 0 - 100%
+float potiBVal = 0.0;      // Gain: 0 - 400%
+float potiCVal = 0.0;      // Calibration Offset: 0 to 120 deg
+float rotorPosition = 0.0; // Logical Rotor opening: 0 - 100%
+bool bypassModeActive = false; // Thermodynamic bypass (notschließen) is active
+
+// Servo Motion Profiling (Ease-In-Ease-Out Softstart/Stop Ramping)
+float targetServoAngle = 0.0f;
+float startServoAngle = 0.0f;
+float currentServoAngle = 0.0f;
+unsigned long servoMoveStartTime = 0;
+float servoMoveDuration = 0.0f; // in milliseconds
+bool servoMoving = false;
+bool servoFinishedPending = false;
+unsigned long servoFinishedTime = 0;
+
+// =====================================================================
+// ESP-NOW & PAIRING STATE MACHINE & WI-FI CHANNEL HOPS
+// =====================================================================
+struct __attribute__((packed)) EspNowMessage {
+  uint8_t pv;              // Protocol version (currently 1)
+  uint8_t type;            // 0 = Pairing Beacon, 1 = Pairing Response, 2 = Command/Data
+  char key[33];            // LMK hex string exchanged during pairing
+  uint8_t command;         // 0 = None, 1 = Play Winner Melody, 2 = Ping-Request, 3 = Ping-Reply
+  float value;             // Numeric payload value
+};
+
+const uint8_t localProtocolVersion = 2;
+uint8_t remoteProtocolVersion = 1;
+bool protocolVersionMismatch = false;
+uint32_t avgEspNowIntervalMs = 1000;
+
+unsigned long lastEspNowRxTime = 0;
+bool isPairingActive = false;
+unsigned long pairingStartTime = 0;
+int currentPairingChannel = 1;
+int originalWifiChannel = 1;
+unsigned long lastPairingBeaconTime = 0;
+unsigned long lastChannelHopTime = 0;
+#include <time.h>
+
+char proposedLmk[33] = "";
+
+// NTP & Weekly Watchdog Reset Helpers
+static bool ntpInitialized = false;
+
+String getWatchdogResetCountdown() {
+  const unsigned long ONE_WEEK_MS = 604800000UL; // 7 days in ms
+  unsigned long nowMs = millis();
+
+  if (nowMs < ONE_WEEK_MS) {
+    unsigned long msRemaining = ONE_WEEK_MS - nowMs;
+    unsigned long totalSecs = msRemaining / 1000UL;
+    unsigned long days = totalSecs / 86400UL;
+    unsigned long hours = (totalSecs % 86400UL) / 3600UL;
+    unsigned long mins = (totalSecs % 3600UL) / 60UL;
+    unsigned long secs = totalSecs % 60UL;
+
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%02luD - %02lu:%02lu:%02lu", days, hours, mins, secs);
+    return String(buf);
+  } else {
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo, 10) && (timeinfo.tm_year >= 120)) {
+      int curH = timeinfo.tm_hour;
+      int curM = timeinfo.tm_min;
+      int curS = timeinfo.tm_sec;
+      int curSecOfDay = curH * 3600 + curM * 60 + curS;
+      int targetSecOfDay = 3 * 3600; // 03:00:00 AM
+
+      int diffSecs = (curSecOfDay < targetSecOfDay) ? (targetSecOfDay - curSecOfDay) : (24 * 3600 - curSecOfDay + targetSecOfDay);
+      unsigned long hours = diffSecs / 3600;
+      unsigned long mins = (diffSecs % 3600) / 60;
+      unsigned long secs = diffSecs % 60;
+
+      char buf[32];
+      snprintf(buf, sizeof(buf), "00D - %02lu:%02lu:%02lu", hours, mins, secs);
+      return String(buf);
+    } else {
+      return String("00D - 00:00:00");
+    }
+  }
+}
+
+void checkWeeklyWatchdogReset() {
+  const unsigned long ONE_WEEK_MS = 604800000UL;
+  if (millis() >= ONE_WEEK_MS) {
+    struct tm timeinfo;
+    bool hasNtp = getLocalTime(&timeinfo, 10) && (timeinfo.tm_year >= 120);
+
+    if (!hasNtp) {
+      Serial.println("[Watchdog] 1 week uptime reached without NTP. Triggering weekly reset...");
+      delay(500);
+      ESP.restart();
+    } else if (timeinfo.tm_hour == 3) {
+      Serial.println("[Watchdog] 1 week uptime reached and 03:00 AM local time reached. Triggering weekly reset...");
+      delay(500);
+      ESP.restart();
+    }
+  }
+}
+
+void playWinnerMelody() {
+  Serial.println("[Buzzer] Playing winner melody...");
+  int notes[] = {
+    523, 587, 659, 698, 784, 880, 988, 1047,
+    1047, 988, 880, 784, 698, 659, 587, 523,
+    523, 659, 784, 1047, 1319, 1568, 2093,
+    2093, 1568, 1319, 1047, 784, 659, 523,
+    523, 587, 659, 698, 784, 880, 988, 1047,
+    1319, 1568, 2093, 2093
+  };
+  int durations[] = {
+    60, 60, 60, 60, 60, 60, 60, 120,
+    60, 60, 60, 60, 60, 60, 60, 120,
+    60, 60, 60, 60, 60, 60, 150,
+    60, 60, 60, 60, 60, 60, 150,
+    50, 50, 50, 50, 50, 50, 50, 50,
+    50, 50, 100, 300
+  };
+  int length = sizeof(notes) / sizeof(notes[0]);
+  for (int i = 0; i < length; i++) {
+    tone(BUZZER_PIN, notes[i], durations[i]);
+    delay(durations[i] + 15);
+  }
+  noTone(BUZZER_PIN);
+}
+
+// Forward declarations
+bool saveConfiguration();
+void initEspNow();
+
+void onEspNowDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  char macStr[18];
+  sprintf(macStr, "%02X:%02X:%02X:%02X:%02X:%02X", mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+  Serial.printf("[ESP-NOW] Message sent to %s, status: %s\n", macStr, (status == ESP_NOW_SEND_SUCCESS) ? "SUCCESS" : "FAIL");
+}
+
+void onEspNowDataRecv(const uint8_t *mac_addr, const uint8_t *data, int data_len) {
+  char macStr[18];
+  sprintf(macStr, "%02X:%02X:%02X:%02X:%02X:%02X", mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+  
+  if (data_len < (int)sizeof(EspNowMessage)) {
+    Serial.printf("[ESP-NOW] Packet too small from %s: %d bytes\n", macStr, data_len);
+    return;
+  }
+  
+  EspNowMessage msg;
+  memcpy(&msg, data, sizeof(EspNowMessage));
+  
+  // Track remote protocol version and mismatch only from paired peer or during active pairing
+  bool isFromPeer = (strlen(sysConfig.espnow_peer_mac) > 0 && strcmp(macStr, sysConfig.espnow_peer_mac) == 0);
+  if (isFromPeer || isPairingActive) {
+    if (lastEspNowRxTime != 0) {
+      unsigned long diff = millis() - lastEspNowRxTime;
+      if (diff < 5000) {
+        avgEspNowIntervalMs = (avgEspNowIntervalMs * 3 + diff) / 4;
+      }
+    }
+    remoteProtocolVersion = msg.pv;
+    if (msg.pv != localProtocolVersion) {
+      if (!protocolVersionMismatch) {
+        Serial.printf("[ESP-NOW] Protocol version mismatch! Local: %d, Remote: %d\n", localProtocolVersion, msg.pv);
+        protocolVersionMismatch = true;
+      }
+    } else {
+      protocolVersionMismatch = false;
+    }
+  }
+  
+  // 1. Pairing Beacon (Type 0) -> Received by Slave
+  if (msg.type == 0 && sysConfig.espnow_role == 2 && isPairingActive) {
+    Serial.printf("[Pairing] Received Master beacon from %s on channel %d!\n", macStr, currentPairingChannel);
+    // Lock channel and peer details
+    sysConfig.espnow_channel = currentPairingChannel;
+    strlcpy(sysConfig.espnow_peer_mac, macStr, sizeof(sysConfig.espnow_peer_mac));
+    strlcpy(sysConfig.espnow_lmk, msg.key, sizeof(sysConfig.espnow_lmk));
+    
+    // Send response back
+    EspNowMessage response;
+    response.pv = localProtocolVersion;
+    response.type = 1; // Response
+    memset(response.key, 0, sizeof(response.key));
+    response.command = 0;
+    response.value = 0;
+    
+    // Register temporary master peer info to reply
+    esp_now_peer_info_t tempPeer;
+    memset(&tempPeer, 0, sizeof(tempPeer));
+    memcpy(tempPeer.peer_addr, mac_addr, 6);
+    tempPeer.channel = currentPairingChannel;
+    tempPeer.encrypt = false;
+    if (esp_now_is_peer_exist(mac_addr)) {
+      esp_now_del_peer(mac_addr);
+    }
+    esp_now_add_peer(&tempPeer);
+    
+    esp_now_send(mac_addr, (uint8_t *)&response, sizeof(EspNowMessage));
+    delay(200);
+    
+    saveConfiguration();
+    isPairingActive = false;
+    
+    // Play happy arpeggio
+    tone(BUZZER_PIN, 523, 100); delay(120);
+    tone(BUZZER_PIN, 659, 100); delay(120);
+    tone(BUZZER_PIN, 784, 100); delay(120);
+    tone(BUZZER_PIN, 1047, 300);
+    
+    initEspNow(); // Re-initialize with secure keys
+    Serial.println("[Pairing] Slave paired successfully!");
+  }
+  
+  // 2. Pairing Response (Type 1) -> Received by Master
+  else if (msg.type == 1 && sysConfig.espnow_role == 1 && isPairingActive) {
+    Serial.printf("[Pairing] Received response from Slave %s!\n", macStr);
+    strlcpy(sysConfig.espnow_peer_mac, macStr, sizeof(sysConfig.espnow_peer_mac));
+    strlcpy(sysConfig.espnow_lmk, proposedLmk, sizeof(sysConfig.espnow_lmk));
+    
+    saveConfiguration();
+    isPairingActive = false;
+    
+    // Play happy arpeggio
+    tone(BUZZER_PIN, 523, 100); delay(120);
+    tone(BUZZER_PIN, 659, 100); delay(120);
+    tone(BUZZER_PIN, 784, 100); delay(120);
+    tone(BUZZER_PIN, 1047, 300);
+    
+    initEspNow(); // Re-initialize with secure keys
+    Serial.println("[Pairing] Master paired successfully!");
+  }
+  
+  // 3. Command/Data (Type 2)
+  else if (msg.type == 2) {
+    // Only accept commands from paired peer
+    if (strcmp(macStr, sysConfig.espnow_peer_mac) == 0) {
+      lastEspNowRxTime = millis();
+      Serial.printf("[ESP-NOW] Received command %d from peer %s\n", msg.command, macStr);
+      if (msg.command == 1) {
+        playWinnerMelody();
+      } else if (msg.command == 2) {
+        if (sysConfig.espnow_role == 2) {
+          rotorPosition = msg.value;
+        }
+        // Reply with Ping-Response (command 3)
+        EspNowMessage response;
+        response.pv = localProtocolVersion;
+        response.type = 2;
+        strlcpy(response.key, sysConfig.espnow_lmk, sizeof(response.key));
+        response.command = 3; // Ping-Reply
+        response.value = 0;
+        esp_now_send(mac_addr, (uint8_t *)&response, sizeof(EspNowMessage));
+      }
+    } else {
+      Serial.printf("[ESP-NOW] Blocked command from unpaired peer %s\n", macStr);
+    }
+  }
+}
+
+void initEspNow() {
+  if (sysConfig.espnow_role == 0) {
+    esp_now_deinit();
+    return;
+  }
+  
+  Serial.println("[ESP-NOW] Initializing ESP-NOW...");
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("[ESP-NOW] Initialization failed!");
+    return;
+  }
+  
+  esp_now_register_send_cb(onEspNowDataSent);
+  esp_now_register_recv_cb(onEspNowDataRecv);
+  
+  // Register paired peer if stored
+  if (strlen(sysConfig.espnow_peer_mac) > 0) {
+    esp_now_peer_info_t peerInfo;
+    memset(&peerInfo, 0, sizeof(peerInfo));
+    
+    int mac[6];
+    sscanf(sysConfig.espnow_peer_mac, "%x:%x:%x:%x:%x:%x", &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]);
+    for (int i = 0; i < 6; i++) {
+      peerInfo.peer_addr[i] = (uint8_t)mac[i];
+    }
+    
+    peerInfo.channel = (sysConfig.espnow_role == 1) ? WiFi.channel() : sysConfig.espnow_channel;
+    peerInfo.ifidx = WIFI_IF_STA;
+    
+    if (strlen(sysConfig.espnow_lmk) == 32) {
+      peerInfo.encrypt = true;
+      // Set PMK
+      esp_now_set_pmk((uint8_t *)"idry26_pmk_secret");
+      // Convert LMK string to byte array
+      for (int i = 0; i < 16; i++) {
+        unsigned int val;
+        sscanf(sysConfig.espnow_lmk + 2 * i, "%2x", &val);
+        peerInfo.lmk[i] = (uint8_t)val;
+      }
+      Serial.printf("[ESP-NOW] Registered peer %s on channel %d WITH CCMP encryption\n", sysConfig.espnow_peer_mac, peerInfo.channel);
+    } else {
+      peerInfo.encrypt = false;
+      Serial.printf("[ESP-NOW] Registered peer %s on channel %d without encryption\n", sysConfig.espnow_peer_mac, peerInfo.channel);
+    }
+    
+    if (esp_now_is_peer_exist(peerInfo.peer_addr)) {
+      esp_now_del_peer(peerInfo.peer_addr);
+    }
+    esp_now_add_peer(&peerInfo);
+  }
+}
+
+bool loadConfiguration() {
+  if (!LittleFS.begin(true)) {
+    Serial.println("[LittleFS] Mount Failed, formatting filesystem...");
+    return false;
+  }
+  if (!LittleFS.exists("/config.json")) {
+    Serial.println("[LittleFS] Configuration file not found.");
+    return false;
+  }
+  File file = LittleFS.open("/config.json", "r");
+  if (!file) {
+    Serial.println("[LittleFS] Failed to open config file.");
+    return false;
+  }
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, file);
+  file.close();
+  if (error) {
+    Serial.println("[LittleFS] Failed to parse config JSON.");
+    return false;
+  }
+  strlcpy(sysConfig.wifi_ssid, doc["wifi_ssid"] | "",
+          sizeof(sysConfig.wifi_ssid));
+  strlcpy(sysConfig.wifi_pass, doc["wifi_pass"] | "",
+          sizeof(sysConfig.wifi_pass));
+  strlcpy(sysConfig.mqtt_server, doc["mqtt_server"] | "",
+          sizeof(sysConfig.mqtt_server));
+  sysConfig.mqtt_port = doc["mqtt_port"] | 1883;
+  strlcpy(sysConfig.mqtt_user, doc["mqtt_user"] | "",
+          sizeof(sysConfig.mqtt_user));
+  strlcpy(sysConfig.mqtt_pass, doc["mqtt_pass"] | "",
+          sizeof(sysConfig.mqtt_pass));
+  strlcpy(sysConfig.mqtt_device_name, doc["mqtt_device_name"] | "",
+          sizeof(sysConfig.mqtt_device_name));
+  sysConfig.mqtt_report_interval = doc["mqtt_report_interval"] | 5;
+  sysConfig.display_brightness = doc["display_brightness"] | 80;
+  sysConfig.wifi_tx_power = doc["wifi_tx_power"] | 52;
+  sysConfig.espnow_role = doc["espnow_role"] | 0;
+  sysConfig.espnow_channel = doc["espnow_channel"] | 1;
+  strlcpy(sysConfig.espnow_peer_mac, doc["espnow_peer_mac"] | "", sizeof(sysConfig.espnow_peer_mac));
+  strlcpy(sysConfig.espnow_lmk, doc["espnow_lmk"] | "", sizeof(sysConfig.espnow_lmk));
+  sysConfig.servo_update_interval = doc["servo_update_interval"] | 5;
+  sysConfig.wlan_time_trap = doc["wlan_time_trap"] | 120;
+  sysConfig.espnow_failsafe_mode = doc["espnow_failsafe_mode"] | 0;
+
+  Serial.println("[LittleFS] Configuration successfully loaded.");
+  return true;
+}
+
+bool saveConfiguration() {
+  File file = LittleFS.open("/config.json", "w");
+  if (!file) {
+    Serial.println("[LittleFS] Failed to open config file for writing.");
+    return false;
+  }
+  JsonDocument doc;
+  doc["wifi_ssid"] = sysConfig.wifi_ssid;
+  doc["wifi_pass"] = sysConfig.wifi_pass;
+  doc["mqtt_server"] = sysConfig.mqtt_server;
+  doc["mqtt_port"] = sysConfig.mqtt_port;
+  doc["mqtt_user"] = sysConfig.mqtt_user;
+  doc["mqtt_pass"] = sysConfig.mqtt_pass;
+  doc["mqtt_device_name"] = sysConfig.mqtt_device_name;
+  doc["mqtt_report_interval"] = sysConfig.mqtt_report_interval;
+  doc["display_brightness"] = sysConfig.display_brightness;
+  doc["wifi_tx_power"] = sysConfig.wifi_tx_power;
+  doc["espnow_role"] = sysConfig.espnow_role;
+  doc["espnow_channel"] = sysConfig.espnow_channel;
+  doc["espnow_peer_mac"] = sysConfig.espnow_peer_mac;
+  doc["espnow_lmk"] = sysConfig.espnow_lmk;
+  doc["servo_update_interval"] = sysConfig.servo_update_interval;
+  doc["wlan_time_trap"] = sysConfig.wlan_time_trap;
+  doc["espnow_failsafe_mode"] = sysConfig.espnow_failsafe_mode;
+
+  if (serializeJson(doc, file) == 0) {
+    Serial.println("[LittleFS] Failed to serialize configuration JSON.");
+    file.close();
+    return false;
+  }
+  file.close();
+  Serial.println("[LittleFS] Configuration successfully saved.");
+  return true;
+}
+
+// =====================================================================
+// SENSOR CONFIGURATIONS
+// =====================================================================
+struct TempSensor {
+  enum Type { TYPE_NONE, TYPE_BME280, TYPE_SHT3X } type = TYPE_NONE;
+  uint8_t address = 0;
+  float temperature = NAN;
+  float humidity = NAN;
+  float pressure = NAN; // BME280 only
+  bool active = false;
+
+  Adafruit_BME280 *bme = nullptr;
+  Adafruit_SHT31 *sht = nullptr;
+};
+
+TempSensor tempSensors[2];
+int detectedTempSensors = 0;
+
+// Light Sensor State
+struct LightSensor {
+  uint8_t address = 0;
+  float lux = NAN;
+  uint16_t broadband = 0;
+  uint16_t ir = 0;
+  bool active = false;
+  Adafruit_TSL2561_Unified *tsl = nullptr;
+};
+
+LightSensor lightSensors[2];
+int detectedLightSensors = 0;
+
+
+
+// =====================================================================
+// HELPER CALCULATIONS
+// =====================================================================
+float calculateDewPoint(float temp, float hum) {
+  if (isnan(temp) || isnan(hum))
+    return NAN;
+  const float b = 17.67f;
+  const float c = 243.5f;
+  float gamma = (b * temp) / (c + temp) + log(hum / 100.0f);
+  return (c * gamma) / (b - gamma);
+}
+
+void scanI2C() {
+  Wire.begin(15, 16);
+  Serial.println("[I2C] Scanning bus on SDA=15, SCL=16...");
+
+  // 1. Scan for temperature/humidity sensors (BME280: 0x76, 0x77 | SHT3x: 0x44,
+  // 0x45)
+  uint8_t tempAddresses[] = {0x76, 0x77, 0x44, 0x45};
+  for (uint8_t addr : tempAddresses) {
+    if (detectedTempSensors >= 2)
+      break; // Max 2 sensors
+
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0) {
+      if (addr == 0x76 || addr == 0x77) {
+        Adafruit_BME280 *bme = new Adafruit_BME280();
+        if (bme->begin(addr, &Wire)) {
+          Serial.printf("[I2C] BME280 initialized at address 0x%02X\n", addr);
+          tempSensors[detectedTempSensors].type = TempSensor::TYPE_BME280;
+          tempSensors[detectedTempSensors].address = addr;
+          tempSensors[detectedTempSensors].bme = bme;
+          tempSensors[detectedTempSensors].active = true;
+          detectedTempSensors++;
+        } else {
+          delete bme;
+        }
+      } else if (addr == 0x44 || addr == 0x45) {
+        Adafruit_SHT31 *sht = new Adafruit_SHT31();
+        if (sht->begin(addr)) {
+          Serial.printf("[I2C] SHT3x initialized at address 0x%02X\n", addr);
+          tempSensors[detectedTempSensors].type = TempSensor::TYPE_SHT3X;
+          tempSensors[detectedTempSensors].address = addr;
+          tempSensors[detectedTempSensors].sht = sht;
+          tempSensors[detectedTempSensors].active = true;
+          detectedTempSensors++;
+        } else {
+          delete sht;
+        }
+      }
+    }
+  }
+
+  // Swap sensors if necessary to ensure BME280 is always tempSensors[0] (Inside / Master)
+  if (tempSensors[1].active && tempSensors[1].type == TempSensor::TYPE_BME280 &&
+      tempSensors[0].active && tempSensors[0].type != TempSensor::TYPE_BME280) {
+    TempSensor temp = tempSensors[0];
+    tempSensors[0] = tempSensors[1];
+    tempSensors[1] = temp;
+    Serial.println("[I2C] Swapped sensors: BME280 promoted to Inside (Master) sensor tempSensors[0]");
+  }
+
+  // 2. Scan for TSL2561 (Light Sensors: addresses 0x29, 0x39, 0x49)
+  uint8_t tslAddresses[] = {0x29, 0x39, 0x49};
+  detectedLightSensors = 0;
+  for (uint8_t addr : tslAddresses) {
+    if (detectedLightSensors >= 2)
+      break; // Max 2 light sensors
+
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0) {
+      Adafruit_TSL2561_Unified *tsl =
+          new Adafruit_TSL2561_Unified(addr, 12345 + detectedLightSensors);
+      if (tsl->begin(&Wire)) {
+        Serial.printf("[I2C] TSL2561 initialized at address 0x%02X\n", addr);
+        tsl->enableAutoRange(true);
+        tsl->setIntegrationTime(TSL2561_INTEGRATIONTIME_101MS);
+        lightSensors[detectedLightSensors].address = addr;
+        lightSensors[detectedLightSensors].tsl = tsl;
+        lightSensors[detectedLightSensors].active = true;
+        detectedLightSensors++;
+      } else {
+        delete tsl;
+      }
+    }
+  }
+}
+
+void readSensors() {
+  // Read Temperature & Humidity sensors
+  for (int i = 0; i < 2; i++) {
+    if (tempSensors[i].active) {
+      if (tempSensors[i].type == TempSensor::TYPE_BME280 &&
+          tempSensors[i].bme) {
+        float t = tempSensors[i].bme->readTemperature();
+        float h = tempSensors[i].bme->readHumidity();
+        float p = tempSensors[i].bme->readPressure() / 100.0F;
+
+        if (isnan(t) || isnan(h) || (t == 0.0f && h == 0.0f)) {
+          tempSensors[i].temperature = NAN;
+          tempSensors[i].humidity = NAN;
+          tempSensors[i].pressure = NAN;
+
+          static unsigned long lastBmeResetTime[2] = {0, 0};
+          if (millis() - lastBmeResetTime[i] > 2000) {
+            lastBmeResetTime[i] = millis();
+            Serial.printf("[Sensor] BME280 at 0x%02X failed to read. Re-initializing...\n", tempSensors[i].address);
+            tempSensors[i].bme->begin(tempSensors[i].address, &Wire);
+          }
+        } else {
+          tempSensors[i].temperature = t;
+          tempSensors[i].humidity = h;
+          tempSensors[i].pressure = p;
+        }
+      } else if (tempSensors[i].type == TempSensor::TYPE_SHT3X &&
+                 tempSensors[i].sht) {
+        float t = tempSensors[i].sht->readTemperature();
+        float h = tempSensors[i].sht->readHumidity();
+
+        if (isnan(t) || isnan(h) || (t == 0.0f && h == 0.0f)) {
+          tempSensors[i].temperature = NAN;
+          tempSensors[i].humidity = NAN;
+          tempSensors[i].pressure = NAN;
+
+          static unsigned long lastShtResetTime[2] = {0, 0};
+          if (millis() - lastShtResetTime[i] > 2000) {
+            lastShtResetTime[i] = millis();
+            Serial.printf("[Sensor] SHT3x at 0x%02X failed to read. Re-initializing...\n", tempSensors[i].address);
+            tempSensors[i].sht->begin(tempSensors[i].address);
+          }
+        } else {
+          tempSensors[i].temperature = t;
+          tempSensors[i].humidity = h;
+          tempSensors[i].pressure = NAN;
+        }
+      }
+    }
+  }
+
+  // Read Light Sensors
+  for (int i = 0; i < 2; i++) {
+    if (lightSensors[i].active && lightSensors[i].tsl) {
+      sensors_event_t event;
+      lightSensors[i].tsl->getEvent(&event);
+      if (event.light) {
+        lightSensors[i].lux = event.light;
+      } else {
+        lightSensors[i].lux = NAN;
+      }
+      // Read raw broadband and ir values
+      uint16_t broadband = 0;
+      uint16_t ir = 0;
+      lightSensors[i].tsl->getLuminosity(&broadband, &ir);
+      lightSensors[i].broadband = broadband;
+      lightSensors[i].ir = ir;
+    }
+  }
+}
+
+void updateServoRamping(bool updateTarget = false) {
+  static bool pendingTargetUpdate = false;
+  if (updateTarget) {
+    pendingTargetUpdate = true;
+  }
+
+  static unsigned long lastPotiReadTime = 0;
+  if (millis() - lastPotiReadTime < 50) {
+    return; // Rate limit ADC reading and target evaluations to 20Hz (50ms) to
+            // ensure stable change detection
+  }
+  lastPotiReadTime = millis();
+
+  bool runUpdate = pendingTargetUpdate;
+  pendingTargetUpdate = false;
+
+  // Read Potentiometers
+  int rawA = analogRead(POTI_A_PIN);
+  int rawB = analogRead(POTI_B_PIN);
+  int rawC = analogRead(POTI_C_PIN);
+
+  // Exponential Moving Average (EMA) noise filter (alpha = 0.15f)
+  static float smoothedA = -1.0f;
+  static float smoothedB = -1.0f;
+  static float smoothedC = -1.0f;
+  if (smoothedA < 0.0f) {
+    smoothedA = rawA;
+    smoothedB = rawB;
+    smoothedC = rawC;
+  } else {
+    smoothedA = 0.15f * rawA + 0.85f * smoothedA;
+    smoothedB = 0.05f * rawB + 0.95f * smoothedB; // Heavy low-pass filter for Poti B to eliminate ADC noise
+    smoothedC = 0.15f * rawC + 0.85f * smoothedC;
+  }
+
+  potiAVal = map((int)round(smoothedA), 0, 4095, 48, 72); // 48 to 72 (24 intervals / 25 discrete steps)
+  potiBVal = (float)round((smoothedB / 4095.0F) * 400.0F);  // Whole integer gain percentage (0 - 400%)
+  potiCVal = (smoothedC / 4095.0F) * 59.0F; // 0 - 59 degrees virtual 0-point offset (180 - 121 = 59 max offset)
+
+  static float lastPotiAVal = -1.0f;
+  static float lastPotiBVal = -1.0f;
+  static float lastPotiCVal = -1.0f;
+
+  // Use thresholds to detect real user turns and filter ADC noise (now stable
+  // because of 50ms rate limit)
+  bool potiAChanged =
+      (lastPotiAVal >= 0.0f) && (fabs(potiAVal - lastPotiAVal) > 1.0f);
+  bool potiBChanged =
+      (lastPotiBVal >= 0.0f) && (fabs(potiBVal - lastPotiBVal) >= 1.0f);
+  bool potiCChanged =
+      (lastPotiCVal >= 0.0f) && (fabs(potiCVal - lastPotiCVal) > 2.0f);
+
+  if (runUpdate || potiAChanged || potiBChanged || potiCChanged ||
+      lastPotiCVal < 0.0f) {
+    if (potiAChanged || lastPotiAVal < 0.0f)
+      lastPotiAVal = potiAVal;
+    if (potiBChanged || lastPotiBVal < 0.0f)
+      lastPotiBVal = potiBVal;
+    if (potiCChanged || lastPotiCVal < 0.0f)
+      lastPotiCVal = potiCVal;
+
+    static int currentPotiAZone = 0; // 0: Proportional, 1: Closed, 2: Open
+    static int lastPotiAZone = -1;
+    int nextZone = currentPotiAZone;
+
+    if (currentPotiAZone == 1) { // Currently closed (48 or 49)
+      if (potiAVal >= 50.0f) {
+        nextZone = 0; // Exit closed zone
+      }
+    } else if (currentPotiAZone == 2) { // Currently open (71 or 72)
+      if (potiAVal <= 70.0f) {
+        nextZone = 0; // Exit open zone
+      }
+    } else { // Currently proportional (50 to 70)
+      if (potiAVal <= 49.0f) {
+        nextZone = 1; // Enter closed zone
+      } else if (potiAVal >= 71.0f) {
+        nextZone = 2; // Enter open zone
+      }
+    }
+
+    if (lastPotiAZone >= 0 && nextZone != lastPotiAZone) {
+      if (nextZone == 1) {
+        // Melodious descending arpeggio (6 notes, ~1.2 seconds): Rigorously closed
+        tone(BUZZER_PIN, 1568, 150); // G6
+        delay(170);
+        tone(BUZZER_PIN, 1319, 150); // E6
+        delay(170);
+        tone(BUZZER_PIN, 1047, 150); // C6
+        delay(170);
+        tone(BUZZER_PIN, 784, 150);  // G5
+        delay(170);
+        tone(BUZZER_PIN, 659, 150);  // E5
+        delay(170);
+        tone(BUZZER_PIN, 523, 300);  // C5
+        delay(350);
+        noTone(BUZZER_PIN);
+      } else if (nextZone == 2) {
+        // Melodious ascending arpeggio (6 notes, ~1.2 seconds): Rigorously open
+        tone(BUZZER_PIN, 523, 150);  // C5
+        delay(170);
+        tone(BUZZER_PIN, 659, 150);  // E5
+        delay(170);
+        tone(BUZZER_PIN, 784, 150);  // G5
+        delay(170);
+        tone(BUZZER_PIN, 1047, 150); // C6
+        delay(170);
+        tone(BUZZER_PIN, 1319, 150); // E6
+        delay(170);
+        tone(BUZZER_PIN, 1568, 300); // G6
+        delay(350);
+        noTone(BUZZER_PIN);
+      }
+    }
+    currentPotiAZone = nextZone;
+    lastPotiAZone = currentPotiAZone;
+
+    bool isSlaveMode = (sysConfig.espnow_role == 2 && strlen(sysConfig.espnow_peer_mac) > 0);
+    bool isSlaveConnected = isSlaveMode && (lastEspNowRxTime != 0) && (millis() - lastEspNowRxTime <= 60000);
+    bool isSlaveFailSafe = isSlaveMode && !isSlaveConnected;
+
+    if (isSlaveConnected) {
+      // Active Slave connection: rotorPosition is mirrored from Master via ESP-NOW.
+    } else if (isSlaveFailSafe && sysConfig.espnow_failsafe_mode == 0) {
+      // Slave Fail-Safe Mode 0 (Default Safety Open): Force 50% Rotor position
+      rotorPosition = 50.0f;
+      bypassModeActive = false;
+    } else {
+      // Master Mode OR Slave Fail-Safe Mode 1 (Local Control via Slave's Poti A & Sensor)
+      if (potiAVal <= 49.0f) {
+        // Virtual switch at bottom end: Rigorously closed (0% opening)
+        rotorPosition = 0.0f;
+        bypassModeActive = false;
+      } else if (potiAVal >= 71.0f) {
+        // Virtual switch at top end: Rigorously open (100% opening)
+        rotorPosition = 100.0f;
+        bypassModeActive = false;
+      } else {
+        // Normal closed-loop sensor-servo control algorithm (50% to 70%)
+        float hum_inside = NAN;
+        float hum_outside = NAN;
+
+        // Find inside sensor (first active sensor in array)
+        if (tempSensors[0].active && !isnan(tempSensors[0].humidity)) {
+          hum_inside = tempSensors[0].humidity;
+        }
+        // Find outside sensor (second active sensor in array)
+        if (tempSensors[1].active && !isnan(tempSensors[1].humidity)) {
+          hum_outside = tempSensors[1].humidity;
+        }
+
+        // If we don't have an inside sensor but the second one is active, treat the second one as inside
+        if (isnan(hum_inside) && !isnan(hum_outside)) {
+          hum_inside = hum_outside;
+          hum_outside = NAN; // No outside sensor available
+        }
+
+        if (!isnan(hum_inside)) {
+          // Thermodynamic bypass check: If outside humidity is higher than inside humidity
+          // OR outside humidity is more than 2% above the target humidity, keep the rotor closed!
+          if (!isnan(hum_outside) && (hum_outside > hum_inside || hum_outside > (potiAVal + 2.0f))) {
+            rotorPosition = 0.0f; // Moisture loading threat! Keep shutter fully closed.
+            if (!bypassModeActive) {
+              bypassModeActive = true;
+              // Suppress warning chime if we are already dry (below target humidity)
+              if (isnan(hum_inside) || hum_inside >= potiAVal) {
+                Serial.println("[Alarm] Thermodynamic bypass triggered immediately. Playing warning chime.");
+                for (int repeat = 0; repeat < 2; repeat++) {
+                  for (int note = 0; note < 3; note++) {
+                    tone(BUZZER_PIN, 500, 80); // 500 Hz, 80ms duration
+                    delay(160); // 80ms sound + 80ms pause
+                  }
+                  if (repeat == 0) {
+                    delay(840); // 1000ms total pause between sequences (1000 - 160 = 840ms extra delay)
+                  }
+                }
+                noTone(BUZZER_PIN);
+              }
+            }
+          } else {
+            bypassModeActive = false;
+            // If current inside humidity is higher than Target (Poti A), we open the rotor to dry the system
+            float error = hum_inside - potiAVal;
+            if (error < 0.0f) error = 0.0f;
+
+            // Scale error by Poti B (Gain). Proportional control: rotor position = error * (gain * 10.0)
+            float gain = potiBVal / 100.0f;
+            float target_pos = error * gain * 10.0f;
+
+            // Flow-limiter based on drying potential (dryness multiplier):
+            // If the outside air is extremely dry compared to our inside target, we scale down the maximum opening
+            // to prevent drying shock (incoming air too dry leads to rapid humidity drop).
+            if (!isnan(hum_outside)) {
+              float diff = potiAVal - hum_outside;
+              if (diff > 10.0f) {
+                float factor = (diff - 10.0f) / 20.0f; // 0.0 to 1.0 (between 10% and 30% difference)
+                if (factor > 1.0f) factor = 1.0f;
+                float multiplier = 1.0f - factor * 0.3f; // scales from 1.0 down to 0.7
+                target_pos *= multiplier;
+              }
+            }
+
+            if (target_pos > 100.0f) target_pos = 100.0f;
+            if (target_pos < 0.0f) target_pos = 0.0f;
+            rotorPosition = target_pos;
+          }
+        } else {
+          // If no active temp/humidity sensor connected:
+          // In Slave Fail-Safe mode, default to 50% safety open; otherwise 0% (closed)
+          rotorPosition = isSlaveFailSafe ? 50.0f : 0.0f;
+          bypassModeActive = false;
+        }
+      }
+    }
+
+    // Calculate Target Servo angle: virtual 0-point offset + 121 degrees sweep
+    // (perfected scale)
+    float newTargetAngle = potiCVal + (rotorPosition / 100.0f) * 121.0f;
+    if (newTargetAngle > 180.0f)
+      newTargetAngle = 180.0f;
+    if (newTargetAngle < 0.0f)
+      newTargetAngle = 0.0f;
+
+    static bool firstRun = true;
+    bool significantChange = (fabs(newTargetAngle - targetServoAngle) > 1.5f);
+    if (significantChange || firstRun) {
+      firstRun = false;
+      targetServoAngle = newTargetAngle;
+      startServoAngle = currentServoAngle;
+      servoMoveStartTime = millis();
+      float diff = fabs(targetServoAngle - startServoAngle);
+      // Duration = 0.5s + (diff / 121.0) * 4.5s
+      servoMoveDuration = (0.5f + (diff / 121.0f) * 4.5f) * 1000.0f;
+      servoMoving = true;
+      servoFinishedPending = false; // Reset shutdown timer
+    }
+  }
+}
+
+// =====================================================================
+// WIFI CONFIG AP, CAPTIVE PORTAL & REALTIME WEB MONITOR
+// =====================================================================
+WebServer server(80);
+DNSServer dnsServer;
+String apSSID = "";
+const char *apPassword = "growblox";
+bool portalActive = false;
+
+// Generate unique SSID from MAC Address
+void generateUniqueSSID() {
+  String mac = WiFi.macAddress();
+  mac.replace(":", "");
+  String last6 = mac.substring(mac.length() - 6);
+  last6.toUpperCase();
+  apSSID = "IDRY26-" + last6;
+}
+
+// REST API for Real-time monitor updates
+void handleGetData() {
+  JsonDocument doc;
+  doc["device_name"] = sysConfig.mqtt_device_name;
+  if (WiFi.status() == WL_CONNECTED) {
+    doc["ip_address"] = WiFi.localIP().toString();
+  } else {
+    doc["ip_address"] =
+        "try to reconnect to: [" + String(sysConfig.wifi_ssid) + "]";
+  }
+  doc["mode"] = isHeadless ? "Headless Mode" : (isTFTMode ? "TFT Mode" : "e-Paper Mode");
+  doc["wifi_ssid"] = sysConfig.wifi_ssid; // Send SSID for client-side use
+
+  // MQTT configuration and state details
+  bool mqtt_configured = (strlen(sysConfig.mqtt_server) > 0);
+  doc["mqtt_enabled"] = mqtt_configured;
+  doc["mqtt_server"] = sysConfig.mqtt_server;
+  doc["mqtt_port"] = sysConfig.mqtt_port;
+  doc["mqtt_connected"] = mqtt_configured ? mqttClient.connected() : false;
+  doc["mqtt_topic"] = stateTopic;
+
+  JsonArray sensors = doc["sensors"].to<JsonArray>();
+  for (int i = 0; i < 2; i++) {
+    if (tempSensors[i].active) {
+      JsonObject s = sensors.add<JsonObject>();
+      s["type"] =
+          (tempSensors[i].type == TempSensor::TYPE_BME280) ? "BME280" : "SHT3x";
+      char addrHex[8];
+      sprintf(addrHex, "0x%02X", tempSensors[i].address);
+      s["address"] = addrHex;
+      s["temperature"] = isnan(tempSensors[i].temperature)
+                             ? JsonVariant()
+                             : tempSensors[i].temperature;
+      s["humidity"] = isnan(tempSensors[i].humidity) ? JsonVariant()
+                                                     : tempSensors[i].humidity;
+      s["pressure"] = isnan(tempSensors[i].pressure) ? JsonVariant()
+                                                     : tempSensors[i].pressure;
+      float dp = calculateDewPoint(tempSensors[i].temperature,
+                                   tempSensors[i].humidity);
+      s["dewpoint"] = isnan(dp) ? JsonVariant() : dp;
+    }
+  }
+
+  JsonArray lightArr = doc["lights"].to<JsonArray>();
+  for (int i = 0; i < 2; i++) {
+    if (lightSensors[i].active) {
+      JsonObject l = lightArr.add<JsonObject>();
+      char addrHex[8];
+      sprintf(addrHex, "0x%02X", lightSensors[i].address);
+      l["address"] = addrHex;
+      l["lux"] =
+          isnan(lightSensors[i].lux) ? JsonVariant() : lightSensors[i].lux;
+      l["broadband"] = lightSensors[i].broadband;
+      l["ir"] = lightSensors[i].ir;
+    }
+  }
+
+  JsonObject potis = doc["potentiometers"].to<JsonObject>();
+  potis["poti_a_target_hum"] = potiAVal;
+  potis["poti_b_gain"] = potiBVal;
+  potis["poti_c_cal_offset"] = potiCVal;
+
+  doc["rotor_position"] = rotorPosition;
+  doc["rotor_offset"] = potiCVal;
+  doc["rssi"] = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
+  doc["espnow_role"] = sysConfig.espnow_role;
+  doc["espnow_peer_mac"] = sysConfig.espnow_peer_mac;
+  doc["espnow_channel"] = (sysConfig.espnow_role == 1) ? (WiFi.status() == WL_CONNECTED ? WiFi.channel() : 1) : (isPairingActive ? currentPairingChannel : sysConfig.espnow_channel);
+  doc["espnow_last_seen_ms"] = (lastEspNowRxTime == 0) ? -1 : (int)(millis() - lastEspNowRxTime);
+  doc["espnow_interval_ms"] = avgEspNowIntervalMs;
+  doc["espnow_pv_mismatch"] = protocolVersionMismatch;
+  doc["espnow_remote_pv"] = remoteProtocolVersion;
+  doc["espnow_local_pv"] = localProtocolVersion;
+  doc["espnow_pairing"] = isPairingActive;
+  doc["espnow_failsafe_mode"] = sysConfig.espnow_failsafe_mode;
+  doc["wifi_mac"] = WiFi.macAddress();
+  doc["wifi_channel"] = WiFi.status() == WL_CONNECTED ? WiFi.channel() : 1;
+  doc["watchdog_reset_countdown"] = getWatchdogResetCountdown();
+
+  String jsonResponse;
+  serializeJson(doc, jsonResponse);
+  server.send(200, "application/json", jsonResponse);
+}
+
+// Active connection check (TCP Handshake time heuristic to verify gateway is
+// alive)
+bool checkGatewayReachable() {
+  IPAddress gw = WiFi.gatewayIP();
+  if (gw[0] == 0)
+    return false;
+
+  WiFiClient client;
+  client.setTimeout(500); // Set short 500ms timeout (setTimeout takes milliseconds on ESP32 Client class)
+  unsigned long start = millis();
+  bool ok = client.connect(gw, 80);
+  unsigned long duration = millis() - start;
+
+  if (ok) {
+    client.stop();
+    return true;
+  }
+
+  // Heuristic: If it failed immediately (duration < 150ms), it means the router
+  // sent a TCP RST (refused). This means the router is physically ONLINE and
+  // responding. If it took longer (> 400ms) to fail, it timed out (no
+  // response), indicating the router is OFFLINE.
+  if (duration < 150) {
+    return true;
+  }
+  return false;
+}
+
+// Config page when in AP mode, Dashboard when in Station mode
+void handlePortalRoot() {
+  if (WiFi.status() == WL_CONNECTED && !portalActive) {
+    // Show Real-time Sensor Dashboard
+    String html = R"rawhtml(
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IDRY-26 Dashboard</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body {
+            background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+            color: #f8fafc;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: rgba(30, 41, 59, 0.45);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            padding: 30px;
+            width: 100%;
+            max-width: 650px;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+        }
+        h1 { text-align: center; margin-bottom: 25px; font-size: 24px; font-weight: 600; letter-spacing: 1px; color: #818cf8; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+        @media(max-width: 500px) { .grid { grid-template-columns: 1fr; } }
+        .card {
+            background: rgba(15, 23, 42, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 20px;
+        }
+        .card-title { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: #94a3b8; margin-bottom: 12px; font-weight: bold; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 5px; }
+        .value-row { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 15px; }
+        .value-row:last-child { margin-bottom: 0; }
+        .val { font-weight: 600; color: #38bdf8; }
+        .tooltip {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            cursor: pointer;
+            margin-left: 6px;
+        }
+        .tooltip .tooltiptext {
+            visibility: hidden;
+            width: 220px;
+            background-color: #ef4444;
+            color: #fff;
+            text-align: center;
+            border-radius: 6px;
+            padding: 8px;
+            position: absolute;
+            z-index: 10;
+            bottom: 125%;
+            left: 50%;
+            transform: translateX(-50%);
+            opacity: 0;
+            transition: opacity 0.3s;
+            font-size: 11px;
+            font-weight: normal;
+            line-height: 1.4;
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.3);
+        }
+        .tooltip:hover .tooltiptext {
+            visibility: visible;
+            opacity: 1;
+        }
+        .info-icon {
+            width: 14px;
+            height: 14px;
+            border: 1px solid currentColor;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 9px;
+            font-weight: bold;
+            font-family: serif;
+        }
+        .footer { text-align: center; margin-top: 20px; font-size: 11px; color: #64748b; }
+        .moon-container { display: flex; justify-content: center; margin-top: 15px; }
+        .moon {
+          width: 80px;
+          height: 80px;
+          background: #191b28;
+          border-radius: 50%;
+          position: relative;
+          overflow: hidden;
+          box-shadow: inset -2px -2px 8px rgba(0,0,0,0.7);
+          border: 1px solid rgba(255,255,255,0.1);
+        }
+        .moon::after {
+          content: '';
+          position: absolute;
+          top: 0; 
+          left: 0;
+          width: 100%; 
+          height: 100%;
+          background: #38bdf8;
+          border-radius: 50%;
+          transform: var(--ts, translateX(-100%));
+          transition: transform 0.2s ease-out;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 id="device-title">IDRY-26 Loading...</h1>
+        <div class="grid">
+            <div class="card" id="sensor-card-0" style="display:none;">
+                <div class="card-title" id="sensor-title-0">Sensor 1</div>
+                <div class="value-row"><span>Temperatur:</span><span class="val" id="temp-0">--</span></div>
+                <div class="value-row"><span>Feuchtigkeit:</span><span class="val" id="hum-0">--</span></div>
+                <div class="value-row" id="dp-row-0"><span>Taupunkt:</span><span class="val" id="dp-0">--</span></div>
+                <div class="value-row" id="press-row-0"><span>Luftdruck:</span><span class="val" id="press-0">--</span></div>
+            </div>
+            <div class="card" id="sensor-card-1" style="display:none;">
+                <div class="card-title" id="sensor-title-1">Sensor 2</div>
+                <div class="value-row"><span>Temperatur:</span><span class="val" id="temp-1">--</span></div>
+                <div class="value-row"><span>Feuchtigkeit:</span><span class="val" id="hum-1">--</span></div>
+                <div class="value-row" id="dp-row-1"><span>Taupunkt:</span><span class="val" id="dp-1">--</span></div>
+                <div class="value-row" id="press-row-1"><span>Luftdruck:</span><span class="val" id="press-1">--</span></div>
+            </div>
+            <div class="card" id="light-card-0" style="display:none;">
+                <div class="card-title" id="light-title-0">TSL2561 (1)</div>
+                <div class="value-row"><span>Helligkeit:</span><span class="val" id="lux-val-0">--</span></div>
+                <div class="value-row"><span>Breitband:</span><span class="val" id="broadband-val-0">--</span></div>
+                <div class="value-row"><span>Infrarot:</span><span class="val" id="ir-val-0">--</span></div>
+            </div>
+            <div class="card" id="light-card-1" style="display:none;">
+                <div class="card-title" id="light-title-1">TSL2561 (2)</div>
+                <div class="value-row"><span>Helligkeit:</span><span class="val" id="lux-val-1">--</span></div>
+                <div class="value-row"><span>Breitband:</span><span class="val" id="broadband-val-1">--</span></div>
+                <div class="value-row"><span>Infrarot:</span><span class="val" id="ir-val-1">--</span></div>
+            </div>
+            <div class="card">
+                <div class="card-title">Potentiometer</div>
+                <div class="value-row"><span>Sollwert Feuchte (A):</span><span class="val" id="poti-a">--</span></div>
+                <div class="value-row"><span>Gain Faktor (B):</span><span class="val" id="poti-b">--</span></div>
+                <div class="value-row"><span>Kalibrierungs-Offset (C):</span><span class="val" id="poti-c">--</span></div>
+            </div>
+            <div class="card">
+                <div class="card-title">Rotor & Servo</div>
+                <div class="value-row"><span>Rotor Stellung:</span><span class="val" id="rotor-pos">--</span></div>
+                <div class="moon-container">
+                    <div id="luna" class="moon"></div>
+                </div>
+            </div>
+            <div class="card" id="espnow-card" style="display:none;">
+                <div class="card-title">ESPNOW</div>
+                <div class="value-row"><span>Rolle:</span><span class="val" id="espnow-val-role" style="font-weight: bold; text-transform: uppercase;">--</span></div>
+                <div class="value-row"><span>Verbindung:</span><span class="val" id="espnow-val-conn">--</span></div>
+                <div class="value-row"><span>Protokoll:</span><span class="val" id="espnow-val-pv">--</span></div>
+            </div>
+            <div class="card" id="mqtt-card" style="display:none;">
+                <div class="card-title" id="mqtt-title">MQTT Dashboard</div>
+                <div class="value-row"><span>Broker:</span><span class="val" id="mqtt-broker">--</span></div>
+                <div class="value-row"><span>Status:</span><span class="val" id="mqtt-status">--</span></div>
+                <div class="value-row"><span style="flex-shrink: 0; margin-right: 10px;">Topic:</span><span class="val" id="mqtt-topic" style="font-size:11px; text-align: right; word-break:break-all;">--</span></div>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-title">System Status</div>
+            <div class="value-row"><span>IP-Adresse:</span><span class="val" id="sys-ip">--</span></div>
+            <div class="value-row"><span>Anzeige-Modus:</span><span class="val" id="sys-mode">--</span></div>
+            <div class="value-row">
+                <span style="display: flex; align-items: center; gap: 10px;">
+                    Signalstärke RSSI:
+                    <div style="width: 50px; height: 8px; background: rgba(255,255,255,0.15); border-radius: 4px; overflow: hidden; display: inline-block;">
+                        <div id="sys-rssi-bar" style="width: 0%; height: 100%; transition: width 0.3s, background-color 0.3s; background: #ef4444;"></div>
+                    </div>
+                </span>
+                <span class="val" id="sys-rssi">--</span>
+            </div>
+            <div class="value-row"><span>Watchdog reset weekly:</span><span class="val" id="sys-wd-reset" style="font-family: monospace;">--</span></div>
+        </div>
+        <div class="footer" style="display: flex; justify-content: space-between; align-items: center; margin-top: 25px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.05);">
+            <span>IDRY26 Live Monitor</span>
+            <a href="/settings" style="color: #818cf8; text-decoration: none; display: inline-flex; align-items: center; gap: 5px; font-weight: 600; padding: 6px 12px; background: rgba(129, 140, 248, 0.1); border-radius: 8px; border: 1px solid rgba(129, 140, 248, 0.2); transition: all 0.2s;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                Einstellungen
+            </a>
+        </div>
+    </div>
+    <script>
+        const wifiSSID = ")rawhtml";
+    html += String(sysConfig.wifi_ssid);
+    html += R"rawhtml(";
+        function setMoon(val) {
+            const m = document.getElementById('luna');
+            if (!m) return;
+            let p = parseInt(val);
+            if (isNaN(p)) p = 0;
+            if (p < 0) p = 0;
+            if (p > 100) p = 100;
+            // Translate the circular blade pseudo-element from -100% (fully closed) to 0% (fully open/aligned)
+            m.style.setProperty('--ts', `translateX(${-100 + p}%)`);
+        }
+        function fetchWithTimeout(resource, options = {}) {
+            const { timeout = 1000 } = options;
+            const controller = new AbortController();
+            const id = setTimeout(() => controller.abort(), timeout);
+            return fetch(resource, { ...options, signal: controller.signal })
+                .then(response => { clearTimeout(id); return response; })
+                .catch(err => { clearTimeout(id); throw err; });
+        }
+        function updateData() {
+            fetchWithTimeout('/api/data', { timeout: 1000 })
+                .then(response => {
+                    if (!response.ok) throw new Error("Connection lost");
+                    return response.json();
+                })
+                .then(data => {
+                    let titleText = data.device_name;
+                    if (data.espnow_role === 1) {
+                        titleText += " [MASTER]";
+                        document.body.style.background = "linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%)";
+                    } else if (data.espnow_role === 2) {
+                        titleText += " [SLAVE]";
+                        document.body.style.background = "linear-gradient(135deg, #1e1b1b 0%, #450a0a 100%)";
+                    } else {
+                        document.body.style.background = "linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%)";
+                    }
+                    document.getElementById('device-title').innerText = titleText;
+                    document.getElementById('sys-ip').innerText = data.ip_address;
+                    document.getElementById('sys-ip').style.color = data.ip_address.startsWith("try") ? "#f87171" : "#38bdf8";
+                    document.getElementById('sys-mode').innerText = data.mode;
+                    let rssi = parseInt(data.rssi) || 0;
+                    if (rssi === 0) rssi = -100;
+                    let pct = Math.round((rssi + 100) * 10 / 7);
+                    if (pct < 0) pct = 0;
+                    if (pct > 100) pct = 100;
+                    const rssiBar = document.getElementById('sys-rssi-bar');
+                    if (rssiBar) {
+                        rssiBar.style.width = pct + "%";
+                        if (rssi >= -50) {
+                            rssiBar.style.backgroundColor = "#22c55e"; // Hellgrün
+                        } else if (rssi >= -70) {
+                            rssiBar.style.backgroundColor = "#84cc16"; // Grün
+                        } else if (rssi >= -80) {
+                            rssiBar.style.backgroundColor = "#eab308"; // Gelb
+                        } else if (rssi >= -90) {
+                            rssiBar.style.backgroundColor = "#f97316"; // Orange
+                        } else {
+                            rssiBar.style.backgroundColor = "#ef4444"; // Rot
+                        }
+                    }
+                    document.getElementById('sys-rssi').innerText = rssi + " dBm";
+                    document.getElementById('sys-rssi').style.color = "#38bdf8";
+                    const wdResetEl = document.getElementById('sys-wd-reset');
+                    if (wdResetEl) {
+                        wdResetEl.innerText = data.watchdog_reset_countdown || "--";
+                    }
+
+                    // Update temperature sensors
+                    for (let i = 0; i < 2; i++) {
+                        let card = document.getElementById('sensor-card-' + i);
+                        if (data.sensors && data.sensors[i]) {
+                            card.style.display = 'block';
+                            document.getElementById('sensor-title-' + i).innerText = data.sensors[i].type + " (" + data.sensors[i].address + ")" + (i === 0 ? " (innen)" : " (außen)");
+                            document.getElementById('temp-' + i).innerText = data.sensors[i].temperature !== null ? data.sensors[i].temperature.toFixed(1) + " °C" : "--";
+                            document.getElementById('hum-' + i).innerText = data.sensors[i].humidity !== null ? data.sensors[i].humidity.toFixed(1) + " %" : "--";
+                            document.getElementById('dp-' + i).innerText = data.sensors[i].dewpoint !== null ? data.sensors[i].dewpoint.toFixed(1) + " °C" : "--";
+                            if (data.sensors[i].type === "BME280" && data.sensors[i].pressure !== null && data.sensors[i].pressure !== undefined) {
+                                document.getElementById('press-row-' + i).style.display = 'flex';
+                                document.getElementById('press-' + i).innerText = data.sensors[i].pressure.toFixed(1) + " hPa";
+                            } else {
+                                document.getElementById('press-row-' + i).style.display = 'none';
+                            }
+                        } else {
+                            card.style.display = 'none';
+                        }
+                    }
+
+                    // Update light sensors
+                    for (let i = 0; i < 2; i++) {
+                        let lightCard = document.getElementById('light-card-' + i);
+                        if (data.lights && data.lights[i]) {
+                            lightCard.style.display = 'block';
+                            document.getElementById('light-title-' + i).innerText = "TSL2561 (" + data.lights[i].address + ")";
+                            document.getElementById('lux-val-' + i).innerText = data.lights[i].lux !== null ? data.lights[i].lux.toFixed(1) + " Lux" : "--";
+                            document.getElementById('broadband-val-' + i).innerText = data.lights[i].broadband;
+                            document.getElementById('ir-val-' + i).innerText = data.lights[i].ir;
+                        } else {
+                            lightCard.style.display = 'none';
+                        }
+                    }
+
+                    // Update potentiometers
+                    let potValA = data.potentiometers.poti_a_target_hum;
+                    let displayA = potValA.toFixed(0) + " %";
+                    if (potValA <= 49.5) {
+                        displayA = "Rigoros ZU";
+                    } else if (potValA >= 70.5) {
+                        displayA = "Rigoros AUF";
+                    }
+                    document.getElementById('poti-a').innerText = displayA;
+                    document.getElementById('poti-b').innerText = data.potentiometers.poti_b_gain.toFixed(0) + " %";
+                    document.getElementById('poti-c').innerText = data.potentiometers.poti_c_cal_offset.toFixed(0) + " °";
+
+                    // Update Rotor & Servo card status dynamically
+                    document.getElementById('rotor-pos').innerText = data.rotor_position.toFixed(0) + " %";
+                    const m = document.getElementById('luna');
+                    if (m) m.style.backgroundColor = '#191b28';
+                    setMoon(data.rotor_position);
+
+                    // Update ESP-NOW card status dynamically
+                    let espnowCard = document.getElementById('espnow-card');
+                    if (data.espnow_role > 0) {
+                        espnowCard.style.display = 'block';
+                        let roleText = data.espnow_role === 1 ? "MASTER" : "SLAVE";
+                        document.getElementById('espnow-val-role').innerHTML = "<strong>" + roleText + "</strong>";
+                        
+                        let connEl = document.getElementById('espnow-val-conn');
+                        let lastSeenMs = data.espnow_last_seen_ms;
+                        if (lastSeenMs === -1) {
+                            connEl.innerText = "Keine Verbindung";
+                            connEl.style.color = "#f87171";
+                        } else if (lastSeenMs <= 15000) {
+                            let intervalSec = ((data.espnow_interval_ms || 1000) / 1000).toFixed(3);
+                            connEl.innerText = "Online (HB " + intervalSec + "s)";
+                            connEl.style.color = "#4ade80";
+                        } else {
+                            connEl.innerText = "Offline (" + (lastSeenMs / 1000).toFixed(3) + "s)";
+                            connEl.style.color = "#f87171";
+                        }
+                        
+                        let pvEl = document.getElementById('espnow-val-pv');
+                        if (data.espnow_pv_mismatch) {
+                            pvEl.innerHTML = "<span style='color: #ef4444; font-weight: bold; display: inline-flex; align-items: center;'>V" + data.espnow_local_pv + 
+                                             " <div class='tooltip'><span class='info-icon'>i</span><span class='tooltiptext'>Unterschiedliche Protokolle erkannt, bitte firmware auf gemeinsamen stand bringen.</span></div></span>";
+                        } else {
+                            pvEl.innerHTML = "<span>V" + data.espnow_local_pv + "</span>";
+                        }
+                    } else {
+                        espnowCard.style.display = 'none';
+                    }
+
+                    // Update MQTT card status dynamically
+                    let mqttCard = document.getElementById('mqtt-card');
+                    if (data.mqtt_enabled) {
+                        mqttCard.style.display = 'block';
+                        document.getElementById('mqtt-title').innerText = "MQTT " + data.device_name;
+                        document.getElementById('mqtt-broker').innerText = data.mqtt_server + ":" + data.mqtt_port;
+                        
+                        let statusEl = document.getElementById('mqtt-status');
+                        if (data.mqtt_connected) {
+                            statusEl.innerText = "connected";
+                            statusEl.style.color = "#4ade80"; // green
+                        } else {
+                            statusEl.innerText = "try to connect";
+                            statusEl.style.color = "#f87171"; // red
+                        }
+                        document.getElementById('mqtt-topic').innerText = data.mqtt_topic;
+                    } else {
+                        mqttCard.style.display = 'none';
+                    }
+                })
+                .catch(err => {
+                    // Connection lost to ESP32
+                    document.getElementById('sys-ip').innerText = "try to reconnect to: [" + wifiSSID + "]";
+                    document.getElementById('sys-ip').style.color = "#f87171";
+                    document.getElementById('sys-rssi').innerText = "OFFLINE";
+                    document.getElementById('sys-rssi').style.color = "#f87171";
+                    
+                    let mqttStatus = document.getElementById('mqtt-status');
+                    if (mqttStatus) {
+                        mqttStatus.innerText = "reconnecting";
+                        mqttStatus.style.color = "#f87171";
+                    }
+                    let rotorPos = document.getElementById('rotor-pos');
+                    if (rotorPos) rotorPos.innerText = "--";
+                    setMoon(0);
+                    const luna = document.getElementById('luna');
+                    if (luna) luna.style.backgroundColor = '#f87171';
+                });
+        }
+        setInterval(updateData, 1000);
+        updateData();
+    </script>
+</body>
+</html>
+)rawhtml";
+    server.send(200, "text/html", html);
+  } else {
+    // Show Wi-Fi setup captive portal
+    int n = WiFi.scanNetworks();
+    String wifiOptions = "";
+    for (int i = 0; i < n; ++i) {
+      wifiOptions += "<option value=\"" + WiFi.SSID(i) + "\">" + WiFi.SSID(i) +
+                     " (" + String(WiFi.RSSI(i)) + " dBm)</option>";
+    }
+
+    String html = R"rawhtml(
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IDRY-26 Device Setup</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body {
+            background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+            color: #f8fafc;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: rgba(30, 41, 59, 0.45);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            padding: 30px;
+            width: 100%;
+            max-width: 500px;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+        }
+        h1 { text-align: center; margin-bottom: 25px; font-size: 24px; font-weight: 600; letter-spacing: 1px; color: #818cf8; }
+        .section-title { font-size: 14px; text-transform: uppercase; letter-spacing: 2px; color: #94a3b8; margin: 15px 0 10px 0; font-weight: bold; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 5px;}
+        .form-group { margin-bottom: 18px; }
+        label { display: block; font-size: 13px; color: #cbd5e1; margin-bottom: 6px; }
+        input, select {
+            width: 100%;
+            padding: 12px 16px;
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            color: white;
+            font-size: 14px;
+            outline: none;
+        }
+        input:focus, select:focus { border-color: #6366f1; }
+        .btn {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+            border: none;
+            border-radius: 10px;
+            color: white;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        .footer { text-align: center; margin-top: 20px; font-size: 11px; color: #64748b; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>IDRY-26 Configuration</h1>
+        <form action="/save" method="POST">
+            <div class="section-title">Wi-Fi Verbindung</div>
+            <div class="form-group">
+                <label for="ssid">Netzwerk (SSID)</label>
+                <select name="ssid" id="ssid">
+                    <option value="">Wähle ein Netzwerk...</option>
+)rawhtml";
+    html += wifiOptions;
+    html += R"rawhtml(
+                </select>
+                <input type="text" name="ssid_custom" placeholder="Oder manuell eingeben..." style="margin-top: 8px;">
+            </div>
+            <div class="form-group">
+                <label for="pass">Wi-Fi Passwort</label>
+                <input type="password" name="pass" id="pass" placeholder="Passwort eingeben">
+            </div>
+
+            <div class="section-title">MQTT Konfiguration</div>
+            <div class="form-group">
+                <label for="mqtt_server">MQTT Broker Adresse</label>
+                <input type="text" name="mqtt_server" id="mqtt_server" placeholder="z.B. 192.168.1.100" required>
+            </div>
+            <div class="form-group">
+                <label for="mqtt_port">MQTT Port</label>
+                <number name="mqtt_port" id="mqtt_port" value="1883" required>
+            </div>
+            <div class="form-group">
+                <label for="mqtt_user">MQTT Benutzername (optional)</label>
+                <input type="text" name="mqtt_user" id="mqtt_user" placeholder="Benutzername">
+            </div>
+            <div class="form-group">
+                <label for="mqtt_pass">MQTT Passwort (optional)</label>
+                <input type="password" name="mqtt_pass" id="mqtt_pass" placeholder="Passwort">
+            </div>
+            <div class="form-group">
+                <label for="mqtt_device">Gerätename in Home Assistant</label>
+                <input type="text" name="mqtt_device" id="mqtt_device" placeholder="z.B. growbox_display">
+            </div>
+
+            <button type="submit" class="btn">Speichern & Verbinden</button>
+        </form>
+        <div class="footer">IDRY26 IoT Device Config Portal</div>
+    </div>
+</body>
+</html>
+)rawhtml";
+    server.send(200, "text/html", html);
+  }
+}
+
+void handlePortalSave() {
+  String ssid = server.arg("ssid");
+  String custom_ssid = server.arg("ssid_custom");
+  if (custom_ssid.length() > 0) {
+    ssid = custom_ssid;
+  }
+  String pass = server.arg("pass");
+  String mqtt_server = server.arg("mqtt_server");
+  int mqtt_port = server.arg("mqtt_port").toInt();
+  String mqtt_user = server.arg("mqtt_user");
+  String mqtt_pass = server.arg("mqtt_pass");
+  String mqtt_device = server.arg("mqtt_device");
+
+  strlcpy(sysConfig.wifi_ssid, ssid.c_str(), sizeof(sysConfig.wifi_ssid));
+  strlcpy(sysConfig.wifi_pass, pass.c_str(), sizeof(sysConfig.wifi_pass));
+  strlcpy(sysConfig.mqtt_server, mqtt_server.c_str(),
+          sizeof(sysConfig.mqtt_server));
+  sysConfig.mqtt_port = (mqtt_port > 0) ? mqtt_port : 1883;
+  strlcpy(sysConfig.mqtt_user, mqtt_user.c_str(), sizeof(sysConfig.mqtt_user));
+  strlcpy(sysConfig.mqtt_pass, mqtt_pass.c_str(), sizeof(sysConfig.mqtt_pass));
+
+  if (mqtt_device.length() > 0) {
+    strlcpy(sysConfig.mqtt_device_name, mqtt_device.c_str(),
+            sizeof(sysConfig.mqtt_device_name));
+  } else {
+    strlcpy(sysConfig.mqtt_device_name, apSSID.c_str(),
+            sizeof(sysConfig.mqtt_device_name));
+  }
+
+  saveConfiguration();
+
+  String html = R"rawhtml(
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Einstellungen gespeichert</title>
+    <style>
+        body { background: #0f172a; color: white; text-align: center; padding-top: 100px; font-family: sans-serif; }
+        .box { background: #1e293b; padding: 40px; border-radius: 15px; display: inline-block; }
+        h1 { color: #818cf8; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h1>Einstellungen gespeichert!</h1>
+        <p>Der ESP32 startet nun neu und verbindet sich mit <strong>)rawhtml";
+  html += ssid + R"rawhtml(</strong>.</p>
+        <p>Bitte verbinde dein Gerät wieder mit deinem Heimnetzwerk.</p>
+    </div>
+    <script>setTimeout(function(){ window.location.href = '/'; }, 5000);</script>
+</body>
+</html>
+)rawhtml";
+  server.send(200, "text/html", html);
+  delay(2000);
+  ESP.restart();
+}
+
+void handleSettingsPage() {
+  bool hasLocalSensor = (detectedTempSensors > 0) || (tempSensors[0].active || tempSensors[1].active);
+  String html = R"rawhtml(
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Settings - IDRY-26</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body {
+            background: )rawhtml";
+  if (sysConfig.espnow_role == 2) {
+    html += "linear-gradient(135deg, #1e1b1b 0%, #450a0a 100%);";
+  } else {
+    html += "linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);";
+  }
+  html += R"rawhtml(
+            color: #f8fafc;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            width: 100%;
+            max-width: 550px;
+        }
+        .header-title {
+            text-align: center;
+            margin-bottom: 25px;
+            font-size: 26px;
+            font-weight: 600;
+            letter-spacing: 1px;
+            color: #818cf8;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+        .settings-card {
+            background: rgba(30, 41, 59, 0.45);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            padding: 25px;
+            margin-bottom: 20px;
+            box-shadow: 0 15px 20px -5px rgba(0, 0, 0, 0.4);
+        }
+        .section-title {
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: #94a3b8;
+            margin-bottom: 18px;
+            font-weight: bold;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            padding-bottom: 6px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .form-group { margin-bottom: 18px; }
+        .form-group:last-child { margin-bottom: 0; }
+        label { display: block; font-size: 13px; color: #cbd5e1; margin-bottom: 6px; }
+        input, select {
+            width: 100%;
+            padding: 12px 16px;
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            color: white;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        input:focus, select:focus { border-color: #6366f1; }
+        .slider-container { display: flex; align-items: center; gap: 15px; }
+        .slider { flex-grow: 1; height: 6px; background: rgba(15, 23, 42, 0.6); outline: none; border-radius: 3px; -webkit-appearance: none; }
+        .slider::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: #6366f1; cursor: pointer; transition: background 0.15s; }
+        .slider::-webkit-slider-thumb:hover { background: #818cf8; }
+        .btn-row { display: flex; gap: 10px; margin-top: 25px; }
+        .btn {
+            flex: 1;
+            padding: 14px;
+            border: none;
+            border-radius: 10px;
+            color: white;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            text-align: center;
+            text-decoration: none;
+            transition: all 0.2s;
+            display: inline-block;
+        }
+        .btn-save { background: rgba(30, 41, 59, 0.6); border: 1px solid #f87171; color: #f87171 !important; }
+        .btn-save:hover { background: #f87171; color: white !important; }
+        .btn-back { background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.15); display: flex; align-items: center; justify-content: center; }
+        .btn-back:hover { background: rgba(255, 255, 255, 0.2); }
+        .btn-secondary { background: rgba(129, 140, 248, 0.15); border: 1px solid rgba(129, 140, 248, 0.3); color: #818cf8; }
+        .btn-secondary:hover { background: rgba(129, 140, 248, 0.3); }
+        .btn-danger { background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.3); color: #ef4444; }
+        .btn-danger:hover { background: rgba(239, 68, 68, 0.35); }
+        .btn-danger.confirm-step { background: #dc2626 !important; border-color: #ef4444 !important; color: white !important; animation: pulse-border 1.5s infinite; }
+        .hint-text { font-size: 11px; color: #94a3b8; margin-top: 5px; display: block; font-family: monospace; }
+        .footer { text-align: center; margin-top: 25px; font-size: 11px; color: #64748b; }
+        @keyframes pulse-border {
+            0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="header-title">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+            Einstellungen
+        </h1>
+        
+        <form action="/settings/save" method="POST" id="settings-form">
+            <!-- WLAN Einstellungen Panel -->
+            <div class="settings-card">
+                <div class="section-title">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"></path><path d="M1.42 9a16 16 0 0 1 21.16 0"></path><path d="M8.53 16.11a6 6 0 0 1 6.95 0"></path><circle cx="12" cy="20" r="1"></circle></svg>
+                    WLAN Verbindung
+                </div>
+                <div class="form-group">
+                    <label for="wifi_ssid">Netzwerk (SSID)</label>
+                    <input type="text" name="wifi_ssid" id="wifi_ssid" value=")rawhtml";
+  html += String(sysConfig.wifi_ssid);
+  html += R"rawhtml(" required>
+                </div>
+                <div class="form-group">
+                    <label for="wifi_pass">Wi-Fi Passwort</label>
+                    <input type="password" name="wifi_pass" id="wifi_pass" value=")rawhtml";
+  html += String(sysConfig.wifi_pass);
+  html += R"rawhtml(" placeholder="Passwort eingeben">
+                </div>
+                <div class="form-group">
+                    <label for="wifi_tx_power">Sendeleistung (RF TX Power)</label>
+                    <select name="wifi_tx_power" id="wifi_tx_power">
+                        <option value="78" style="color: #f87171;")rawhtml"; if (sysConfig.wifi_tx_power == 78) html += " selected"; html += R"rawhtml(>19.5 dBm (Maximum - Risiko!)</option>
+                        <option value="68" style="color: #f87171;")rawhtml"; if (sysConfig.wifi_tx_power == 68) html += " selected"; html += R"rawhtml(>17.0 dBm (Hoch - Risiko!)</option>
+                        <option value="60" style="color: #f87171;")rawhtml"; if (sysConfig.wifi_tx_power == 60) html += " selected"; html += R"rawhtml(>15.0 dBm (Mittel - Warnung)</option>
+                        <option value="52" style="color: #4ade80;")rawhtml"; if (sysConfig.wifi_tx_power == 52) html += " selected"; html += R"rawhtml(>13.0 dBm (Standard - Empfohlen)</option>
+                        <option value="44")rawhtml"; if (sysConfig.wifi_tx_power == 44) html += " selected"; html += R"rawhtml(>11.0 dBm (Sehr Niedrig)</option>
+                        <option value="34")rawhtml"; if (sysConfig.wifi_tx_power == 34) html += " selected"; html += R"rawhtml(>8.5 dBm (Minimum)</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- MQTT Einstellungen Panel -->
+            <div class="settings-card">
+                <div class="section-title">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
+                    MQTT Konfiguration
+                </div>
+                <div class="form-group">
+                    <label for="mqtt_server">MQTT Broker Adresse</label>
+                    <input type="text" name="mqtt_server" id="mqtt_server" value=")rawhtml";
+  html += String(sysConfig.mqtt_server);
+  html += R"rawhtml(" placeholder="z.B. 192.168.1.100">
+                </div>
+                <div class="form-group">
+                    <label for="mqtt_port">MQTT Port</label>
+                    <input type="number" name="mqtt_port" id="mqtt_port" value=")rawhtml";
+  html += String(sysConfig.mqtt_port);
+  html += R"rawhtml(" required>
+                </div>
+                <div class="form-group">
+                    <label for="mqtt_user">MQTT Benutzername</label>
+                    <input type="text" name="mqtt_user" id="mqtt_user" value=")rawhtml";
+  html += String(sysConfig.mqtt_user);
+  html += R"rawhtml(" placeholder="optional">
+                </div>
+                <div class="form-group">
+                    <label for="mqtt_pass">MQTT Passwort</label>
+                    <input type="password" name="mqtt_pass" id="mqtt_pass" value=")rawhtml";
+  html += String(sysConfig.mqtt_pass);
+  html += R"rawhtml(" placeholder="optional">
+                </div>
+                <div class="form-group">
+                    <label for="mqtt_device_name">Gerätename (HA Discovery Name)</label>
+                    <input type="text" name="mqtt_device_name" id="mqtt_device_name" value=")rawhtml";
+  html += String(sysConfig.mqtt_device_name);
+  html += R"rawhtml(" required>
+                    <span class="hint-text">Publish Topic: <span id="topic-preview">idry/)rawhtml";
+  html += String(sysConfig.mqtt_device_name);
+  html += R"rawhtml(/state</span></span>
+                </div>
+                <div class="form-group">
+                    <label for="interval-slider">MQTT Sende-Intervall: <span id="interval-label">)rawhtml";
+  html += String(sysConfig.mqtt_report_interval);
+  html += R"rawhtml( Minuten</span></label>
+                    <div class="slider-container">
+                        <input type="range" name="mqtt_report_interval" min="1" max="60" class="slider" id="interval-slider" value=")rawhtml";
+  html += String(sysConfig.mqtt_report_interval);
+  html += R"rawhtml(" required>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ESP-NOW Einstellungen Panel -->
+            <div class="settings-card">
+                <div class="section-title">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+                    ESPNOW &nbsp;<span id="espnow-local-mac" style="font-family: monospace; text-transform: none; color: #94a3b8;">[Laden...]</span>
+                </div>
+                <div class="form-group">
+                    <label for="espnow_role">Status / Rolle</label>
+                    <select name="espnow_role" id="espnow_role" onchange="toggleEspNowFields()")rawhtml";
+  if (strlen(sysConfig.espnow_peer_mac) > 0) {
+    html += " disabled";
+  }
+  html += R"rawhtml(>
+                        <option value="0")rawhtml"; if (sysConfig.espnow_role == 0) html += " selected"; html += R"rawhtml(>Deaktiviert</option>
+                        <option value="1")rawhtml"; if (sysConfig.espnow_role == 1) html += " selected"; html += R"rawhtml(>Master</option>
+                        <option value="2")rawhtml"; if (sysConfig.espnow_role == 2) html += " selected"; html += R"rawhtml(>Slave</option>
+                    </select>
+                </div>
+                <div class="form-group" id="espnow-channel-group">
+                    <label for="espnow_channel">Kanal (nur für Slave relevant)</label>
+                    <select name="espnow_channel" id="espnow_channel")rawhtml";
+  if (strlen(sysConfig.espnow_peer_mac) > 0) {
+    html += " disabled";
+  }
+  html += R"rawhtml(>
+)rawhtml";
+  for (int c = 1; c <= 13; c++) {
+    html += "                        <option value=\"" + String(c) + "\"";
+    if (sysConfig.espnow_channel == c) html += " selected";
+    html += ">Kanal " + String(c) + "</option>";
+  }
+  html += R"rawhtml(
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="espnow_peer_mac">Partner MAC-Adresse</label>
+                    <input type="text" name="espnow_peer_mac" id="espnow_peer_mac" value=")rawhtml";
+  html += String(sysConfig.espnow_peer_mac);
+  html += R"rawhtml(" placeholder="XX:XX:XX:XX:XX:XX" pattern="^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$")rawhtml";
+  if (strlen(sysConfig.espnow_peer_mac) > 0) {
+    html += " readonly";
+  }
+  html += R"rawhtml(>
+                    <span class="hint-text" id="espnow-scan-hint")rawhtml";
+  if (strlen(sysConfig.espnow_peer_mac) > 0) {
+    html += " style=\"display:none;\"";
+  }
+  html += R"rawhtml(>Leer lassen für automatischen Scan</span>
+                </div>
+                <div class="form-group">
+                    <label for="espnow_failsafe_mode">Connection-Loss Fail-Safe (Slave)</label>)rawhtml";
+  if (!hasLocalSensor) {
+    html += R"rawhtml(
+                    <div style="color: #f87171; font-size: 12px; margin-top: 6px; margin-bottom: 8px; font-weight: 500; line-height: 1.4;">
+                        (Kein Sensor angeschlossen! -> Notfall 50% erzwungen)<br>
+                        Bei Bedarf BME280 oder SHT31 anschließen<br>
+                        Und dann nochmal hier im Menu aktivieren.
+                    </div>)rawhtml";
+  }
+  html += R"rawhtml(
+                    <select name="espnow_failsafe_mode" id="espnow_failsafe_mode">
+                        <option value="0")rawhtml"; if (sysConfig.espnow_failsafe_mode == 0 || !hasLocalSensor) html += " selected"; html += R"rawhtml(>50% Rotor-Position (Notfall-Öffnung)</option>
+                        <option value="1")rawhtml"; if (sysConfig.espnow_failsafe_mode == 1 && hasLocalSensor) html += " selected"; if (!hasLocalSensor) html += " disabled style=\"color: #64748b;\""; html += R"rawhtml(>Lokale Steuerung (Slave Poti A & Sensor) )rawhtml"; if (!hasLocalSensor) html += "[Kein Sensor]"; html += R"rawhtml(</option>
+                    </select>
+                    <span class="hint-text">Verhalten des Slaves bei Verbindungsverlust (>60s) zum Master</span>
+                </div>
+                <div class="form-group">
+                    <label>Verbindungs-Status</label>
+                    <div id="espnow-status" style="font-size: 13px; font-weight: 600; font-family: monospace; color: #f87171; margin-bottom: 8px;">
+                        Warte auf Verbindung...
+                    </div>
+                    <span class="hint-text" id="espnow-pv-info" style="color: #38bdf8; display: block;">Protocol Version Local [v1]</span>
+                    <span class="hint-text" id="espnow-pv-warning" style="color: #f87171; display: none; margin-top: 4px;">Protokoll-Unterschiede erkannt, bitte Firmware updaten auf eine gemeinsame Version.</span>
+                </div>
+                <div class="btn-row" style="margin-top: 15px;">
+                    <button type="button" id="pair-btn" onclick="togglePairing()" class="btn btn-secondary")rawhtml";
+  if (strlen(sysConfig.espnow_peer_mac) > 0) {
+    html += " style=\"display:none;\"";
+  }
+  html += R"rawhtml(>Pairing starten</button>
+                </div>
+            </div>
+
+            <!-- Buzzer Test Panel -->
+            <div class="settings-card">
+                <div class="section-title">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5L6 9H2v6h4l5 4V5z"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
+                    Buzzer Test
+                </div>
+                <div class="btn-row" style="margin-top: 5px;">
+                    <button type="button" onclick="testBuzzer('local')" class="btn btn-secondary">Lokal abspielen</button>
+                    <button type="button" id="remote-buzz-btn" onclick="testBuzzer('remote')" class="btn btn-secondary" style="display: none;">Remote abspielen</button>
+                </div>
+            </div>
+
+            <!-- Systemeinstellungen Panel -->
+            <div class="settings-card">
+                <div class="section-title">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+                    System & Anzeige
+                </div>
+                <div class="form-group">
+                    <label for="brightness-slider">Display-Helligkeit: <span id="brightness-label">)rawhtml";
+  html += String(sysConfig.display_brightness);
+  html += R"rawhtml(%</span></label>
+                    <div class="slider-container">
+                        <input type="range" name="display_brightness" min="0" max="100" class="slider" id="brightness-slider" value=")rawhtml";
+  html += String(sysConfig.display_brightness);
+  html += R"rawhtml(">
+                    </div>
+                    <span class="hint-text" style="font-family: inherit;">Natürliches Dimmverhalten über Gamma 2.2 Korrektur</span>
+                </div>
+                <div class="form-group">
+                    <label for="servo-interval-slider">Servo Update-Intervall: <span id="servo-interval-label">)rawhtml";
+  html += String(sysConfig.servo_update_interval);
+  html += R"rawhtml( Sekunden</span></label>
+                    <div class="slider-container">
+                        <input type="range" name="servo_update_interval" min="1" max="30" class="slider" id="servo-interval-slider" value=")rawhtml";
+  html += String(sysConfig.servo_update_interval);
+  html += R"rawhtml(" required>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="wlan-time-trap-slider">WLAN connection watchdog time: <span id="wlan-time-trap-label">)rawhtml";
+  if (sysConfig.wlan_time_trap == 0) {
+    html += "0 <span style='color: #ef4444; font-weight: bold;'> (deaktiviert)</span>";
+  } else {
+    html += String(sysConfig.wlan_time_trap) + " Sekunden";
+  }
+  html += R"rawhtml(</span></label>
+                    <div class="slider-container">
+                        <input type="range" name="wlan_time_trap" min="0" max="330" class="slider" id="wlan-time-trap-slider" value=")rawhtml";
+  html += String(sysConfig.wlan_time_trap);
+  html += R"rawhtml(" required>
+                    </div>
+                </div>
+            </div>
+
+            <div class="btn-row">
+                <button type="submit" class="btn btn-save">Save</button>
+                <a href="/" class="btn btn-back">Back</a>
+            </div>
+        </form>
+
+        <!-- System Status Panel -->
+        <div class="settings-card" style="margin-top: 25px;">
+            <div class="section-title">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+                System Status
+            </div>
+            <div class="value-row" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 13px;">
+                <span>IP-Adresse:</span>
+                <span class="val" id="sys-ip" style="font-family: monospace; color: #38bdf8; font-weight: 600;">--</span>
+            </div>
+            <div class="value-row" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 13px;">
+                <span>Anzeige-Modus:</span>
+                <span class="val" id="sys-mode" style="font-family: monospace; font-weight: 600;">--</span>
+            </div>
+            <div class="value-row" style="display: flex; justify-content: space-between; align-items: center; font-size: 13px;">
+                <span style="display: flex; align-items: center; gap: 10px;">
+                    Signalstärke RSSI:
+                    <div style="width: 50px; height: 8px; background: rgba(255,255,255,0.15); border-radius: 4px; overflow: hidden; display: inline-block;">
+                        <div id="sys-rssi-bar" style="width: 0%; height: 100%; transition: width 0.3s, background-color 0.3s; background: #ef4444;"></div>
+                    </div>
+                </span>
+                <span class="val" id="sys-rssi" style="font-family: monospace; color: #38bdf8; font-weight: 600;">--</span>
+            </div>
+            <div class="value-row" style="display: flex; justify-content: space-between; align-items: center; margin-top: 12px; font-size: 13px;">
+                <span>Watchdog reset weekly:</span>
+                <span class="val" id="settings-wd-reset" style="font-family: monospace; font-weight: 600;">--</span>
+            </div>
+        </div>
+
+        <!-- Geräte-Management Panel -->
+        <div class="settings-card" style="margin-top: 25px;">
+            <div class="section-title" style="color: #f87171;">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+                Geräte-Management
+            </div>
+            <form id="reset-form" action="/settings/reset" method="POST">
+                <div class="btn-row" style="margin-top: 5px; flex-direction: column; gap: 12px;">
+                    <button type="submit" name="action" value="reboot" class="btn btn-secondary" style="width:100%; border-color: rgba(74, 222, 128, 0.4); color: #4ade80;">Reboot Device</button>
+                    <button type="submit" name="action" value="defaults" class="btn btn-secondary" style="width:100%;">Restore Defaults (ohne WLAN/MQTT)</button>
+                    <button type="submit" name="action" value="delete_espnow" class="btn btn-secondary" style="width:100%; border-color: rgba(239, 68, 68, 0.4); color: #f87171;">Delete ESPNOW connections</button>
+                    <button type="button" id="complete-reset-btn" class="btn btn-danger" style="width:100%;">Complete Reset</button>
+                    <input type="hidden" name="action" id="reset-action" value="">
+                </div>
+            </form>
+        </div>
+
+        <div class="footer">IDRY26 Live Monitor</div>
+    </div>
+
+    <script>
+        // Real-time brightness slider update
+        const brightnessSlider = document.getElementById('brightness-slider');
+        const brightnessLabel = document.getElementById('brightness-label');
+        brightnessSlider.oninput = function() {
+            brightnessLabel.innerText = this.value + "%";
+        }
+
+        // Real-time report interval slider update
+        const intervalSlider = document.getElementById('interval-slider');
+        const intervalLabel = document.getElementById('interval-label');
+        intervalSlider.oninput = function() {
+            intervalLabel.innerText = this.value + " Minuten";
+        }
+
+        // Real-time servo update interval slider update
+        const servoIntervalSlider = document.getElementById('servo-interval-slider');
+        const servoIntervalLabel = document.getElementById('servo-interval-label');
+        servoIntervalSlider.oninput = function() {
+            servoIntervalLabel.innerText = this.value + " Sekunden";
+        }
+
+        // Real-time WLAN Time Trap slider update
+        const trapSlider = document.getElementById('wlan-time-trap-slider');
+        const trapLabel = document.getElementById('wlan-time-trap-label');
+        trapSlider.oninput = function() {
+            if (parseInt(this.value) === 0) {
+                trapLabel.innerHTML = this.value + " <span style='color: #ef4444; font-weight: bold;'> (deaktiviert)</span>";
+            } else {
+                trapLabel.innerHTML = this.value + " Sekunden";
+            }
+        }
+
+        // Real-time HA topic preview path update
+        const deviceInput = document.getElementById('mqtt_device_name');
+        const topicPreview = document.getElementById('topic-preview');
+        deviceInput.oninput = function() {
+            const cleanVal = this.value.trim() || "device_name";
+            topicPreview.innerText = "idry/" + cleanVal + "/state";
+        }
+
+        // ESP-NOW UI State Updates
+        function toggleEspNowFields() {
+            const role = document.getElementById('espnow_role').value;
+            const chanGroup = document.getElementById('espnow-channel-group');
+            const chanSelect = document.getElementById('espnow_channel');
+            if (role === "1" || role === "0") {
+                chanSelect.disabled = true;
+                chanGroup.style.opacity = "0.5";
+            } else {
+                chanSelect.disabled = false;
+                chanGroup.style.opacity = "1";
+            }
+        }
+        
+        let pairingActive = false;
+        let lastMismatchTime = 0;
+        function togglePairing() {
+            const btn = document.getElementById('pair-btn');
+            const action = pairingActive ? 'stop' : 'start';
+            const role = document.getElementById('espnow_role').value;
+            const channel = document.getElementById('espnow_channel').value;
+            let url = '/api/espnow/pair?action=' + action;
+            if (action === 'start') {
+                url += '&role=' + role + '&channel=' + channel;
+            }
+            fetch(url)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status === 'ok') {
+                        pairingActive = !pairingActive;
+                        btn.innerText = pairingActive ? 'Pairing abbrechen' : 'Pairing starten';
+                        if (pairingActive) {
+                            btn.classList.add('confirm-step');
+                        } else {
+                            btn.classList.remove('confirm-step');
+                        }
+                    } else {
+                        alert(data.message || 'Error executing action');
+                    }
+                }).catch(err => console.error(err));
+        }
+
+        function testBuzzer(type) {
+            fetch('/api/espnow/buzzer_test?type=' + type)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status !== 'ok') {
+                        alert(data.message || 'Fehler beim Buzzer-Test');
+                    }
+                }).catch(err => console.error(err));
+        }
+
+        // Poll real-time data for ESP-NOW and MAC Addresses
+        function pollEspNowStatus() {
+            fetch('/api/data')
+                .then(r => r.json())
+                .then(data => {
+                    const wifiChannel = data.wifi_channel || 1;
+                    const role = parseInt(document.getElementById('espnow_role').value) || 0;
+                    
+                    if (role === 2) {
+                        document.body.style.background = "linear-gradient(135deg, #1e1b1b 0%, #450a0a 100%)";
+                    } else {
+                        document.body.style.background = "linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%)";
+                    }
+                    
+                    document.getElementById('espnow-local-mac').innerText = "[" + (data.wifi_mac || "") + "]";
+                    
+                    if (role === 1) {
+                        document.getElementById('espnow_channel').value = wifiChannel;
+                    }
+                    
+                    const statusDiv = document.getElementById('espnow-status');
+                    const lastSeenMs = data.espnow_last_seen_ms;
+                    
+                    if (role === 0) {
+                        statusDiv.innerText = "ESP-NOW deaktiviert";
+                        statusDiv.style.color = "#94a3b8";
+                    } else if (lastSeenMs === -1) {
+                        statusDiv.innerText = "Nie gesehen / Keine Verbindung";
+                        statusDiv.style.color = "#f87171";
+                    } else if (lastSeenMs <= 15000) {
+                        const intervalSec = ((data.espnow_interval_ms || 1000) / 1000).toFixed(3);
+                        statusDiv.innerText = "Online (HB " + intervalSec + "s)";
+                        statusDiv.style.color = "#4ade80";
+                    } else {
+                        statusDiv.innerText = "Offline (Kontakt: " + (lastSeenMs / 1000).toFixed(3) + "s)";
+                        statusDiv.style.color = "#f87171";
+                    }
+                    
+                    // Update Protocol Version Info static line
+                    const pvInfoEl = document.getElementById('espnow-pv-info');
+                    const pvWarnEl = document.getElementById('espnow-pv-warning');
+                    const peerMac = data.espnow_peer_mac || "";
+                    
+                    if (peerMac.length > 0) {
+                        pvInfoEl.innerText = "Protocol Version Local [v" + data.espnow_local_pv + "] Partner [v" + data.espnow_remote_pv + "]";
+                    } else {
+                        pvInfoEl.innerText = "Protocol Version Local [v" + data.espnow_local_pv + "]";
+                    }
+                    
+                    if (data.espnow_pv_mismatch) {
+                        pvWarnEl.style.display = "block";
+                        lastMismatchTime = Date.now();
+                    } else {
+                        // Hold the warning visible for at least 2000ms
+                        if (!lastMismatchTime || (Date.now() - lastMismatchTime > 2000)) {
+                            pvWarnEl.style.display = "none";
+                        }
+                    }
+                    
+                    const roleSelect = document.getElementById('espnow_role');
+                    const chanSelect = document.getElementById('espnow_channel');
+                    if (peerMac.length > 0) {
+                        roleSelect.disabled = true;
+                        chanSelect.disabled = true;
+                    } else {
+                        roleSelect.disabled = false;
+                        toggleEspNowFields();
+                    }
+                    
+                    const peerInput = document.getElementById('espnow_peer_mac');
+                    if (peerInput) {
+                        if (peerMac.length > 0) {
+                            peerInput.readOnly = true;
+                        } else {
+                            peerInput.readOnly = false;
+                        }
+                        if (document.activeElement !== peerInput) {
+                            peerInput.value = peerMac;
+                        }
+                    }
+                    const scanHint = document.getElementById('espnow-scan-hint');
+                    if (scanHint) {
+                        if (peerMac.length > 0) {
+                            scanHint.style.display = 'none';
+                        } else {
+                            scanHint.style.display = 'inline';
+                        }
+                    }
+                    const remoteBtn = document.getElementById('remote-buzz-btn');
+                    if (peerMac.length > 0) {
+                        remoteBtn.style.display = "inline-block";
+                    } else {
+                        remoteBtn.style.display = "none";
+                    }
+                    
+                    pairingActive = data.espnow_pairing || false;
+                    const pairBtn = document.getElementById('pair-btn');
+                    if (peerMac.length > 0) {
+                        pairBtn.style.display = 'none';
+                    } else {
+                        pairBtn.style.display = 'inline-block';
+                        if (pairingActive) {
+                            pairBtn.innerText = 'Pairing abbrechen';
+                            pairBtn.classList.add('confirm-step');
+                        } else {
+                            pairBtn.innerText = 'Pairing starten';
+                            pairBtn.classList.remove('confirm-step');
+                        }
+                    }
+
+                    // Update System Status card on Settings page
+                    const sysIpEl = document.getElementById('sys-ip');
+                    if (sysIpEl) {
+                        sysIpEl.innerText = data.ip_address || "--";
+                        sysIpEl.style.color = (data.ip_address && data.ip_address.startsWith("try")) ? "#f87171" : "#38bdf8";
+                    }
+                    const sysModeEl = document.getElementById('sys-mode');
+                    if (sysModeEl) {
+                        sysModeEl.innerText = data.mode || "--";
+                    }
+                    const settingsRssiEl = document.getElementById('sys-rssi');
+                    if (settingsRssiEl) {
+                        let rssi = parseInt(data.rssi) || 0;
+                        if (rssi === 0) rssi = -100;
+                        settingsRssiEl.innerText = rssi + " dBm";
+                        
+                        let pct = Math.round((rssi + 100) * 10 / 7);
+                        if (pct < 0) pct = 0;
+                        if (pct > 100) pct = 100;
+                        
+                        const rssiBar = document.getElementById('sys-rssi-bar');
+                        if (rssiBar) {
+                            rssiBar.style.width = pct + "%";
+                            if (rssi >= -50) {
+                                rssiBar.style.backgroundColor = "#22c55e";
+                            } else if (rssi >= -70) {
+                                rssiBar.style.backgroundColor = "#84cc16";
+                            } else if (rssi >= -80) {
+                                rssiBar.style.backgroundColor = "#eab308";
+                            } else if (rssi >= -90) {
+                                rssiBar.style.backgroundColor = "#f97316";
+                            } else {
+                                rssiBar.style.backgroundColor = "#ef4444";
+                            }
+                        }
+                    }
+                    const settingsWdEl = document.getElementById('settings-wd-reset');
+                    if (settingsWdEl) {
+                        settingsWdEl.innerText = data.watchdog_reset_countdown || "--";
+                    }
+                }).catch(err => console.error(err));
+        }
+
+        // Initialize and poll
+        toggleEspNowFields();
+        pollEspNowStatus();
+        setInterval(pollEspNowStatus, 250);
+
+        document.getElementById('settings-form').onsubmit = function() {
+            document.getElementById('espnow_role').disabled = false;
+            document.getElementById('espnow_channel').disabled = false;
+        };
+
+        // Two-stage confirmation for Complete Reset button
+        const resetBtn = document.getElementById('complete-reset-btn');
+        const resetForm = document.getElementById('reset-form');
+        const resetAction = document.getElementById('reset-action');
+        let confirmStage = false;
+
+        resetBtn.onclick = function() {
+            if (!confirmStage) {
+                confirmStage = true;
+                resetBtn.innerText = "Sicher? Alle Daten loeschen!";
+                resetBtn.classList.add('confirm-step');
+                
+                setTimeout(function() {
+                    confirmStage = false;
+                    resetBtn.innerText = "Complete Reset";
+                    resetBtn.classList.remove('confirm-step');
+                }, 5000);
+            } else {
+                resetAction.value = "clear";
+                resetForm.submit();
+            }
+        }
+    </script>
+</body>
+</html>
+)rawhtml";
+  server.send(200, "text/html", html);
+}
+
+void handleSettingsSave() {
+  String ssid = server.arg("wifi_ssid");
+  String pass = server.arg("wifi_pass");
+  String mqtt_server = server.arg("mqtt_server");
+  int mqtt_port = server.arg("mqtt_port").toInt();
+  String mqtt_user = server.arg("mqtt_user");
+  String mqtt_pass = server.arg("mqtt_pass");
+  String mqtt_device = server.arg("mqtt_device_name");
+  int interval = server.arg("mqtt_report_interval").toInt();
+  int brightness = server.arg("display_brightness").toInt();
+  int tx_power = server.arg("wifi_tx_power").toInt();
+  int servo_up_int = server.arg("servo_update_interval").toInt();
+  int trap_val = server.arg("wlan_time_trap").toInt();
+
+  int esp_role = server.arg("espnow_role").toInt();
+  int esp_channel = server.arg("espnow_channel").toInt();
+  int esp_failsafe = server.arg("espnow_failsafe_mode").toInt();
+  String esp_peer_mac = server.arg("espnow_peer_mac");
+  esp_peer_mac.trim();
+  esp_peer_mac.toUpperCase();
+
+  if (interval < 1) interval = 1;
+  if (interval > 60) interval = 60;
+  if (brightness < 0) brightness = 0;
+  if (brightness > 100) brightness = 100;
+  if (esp_channel < 1) esp_channel = 1;
+  if (esp_channel > 13) esp_channel = 13;
+  if (servo_up_int < 1) servo_up_int = 1;
+  if (servo_up_int > 30) servo_up_int = 30;
+  if (trap_val < 0) trap_val = 0;
+  if (trap_val > 330) trap_val = 330;
+  if (esp_failsafe < 0 || esp_failsafe > 1) esp_failsafe = 0;
+
+  // Check if any configuration parameters actually changed
+  bool hasChanges = (
+    strcmp(sysConfig.wifi_ssid, ssid.c_str()) != 0 ||
+    strcmp(sysConfig.wifi_pass, pass.c_str()) != 0 ||
+    strcmp(sysConfig.mqtt_server, mqtt_server.c_str()) != 0 ||
+    sysConfig.mqtt_port != mqtt_port ||
+    strcmp(sysConfig.mqtt_user, mqtt_user.c_str()) != 0 ||
+    strcmp(sysConfig.mqtt_pass, mqtt_pass.c_str()) != 0 ||
+    strcmp(sysConfig.mqtt_device_name, mqtt_device.c_str()) != 0 ||
+    sysConfig.mqtt_report_interval != interval ||
+    sysConfig.display_brightness != brightness ||
+    sysConfig.wifi_tx_power != tx_power ||
+    sysConfig.espnow_role != esp_role ||
+    sysConfig.espnow_channel != esp_channel ||
+    strcmp(sysConfig.espnow_peer_mac, esp_peer_mac.c_str()) != 0 ||
+    sysConfig.servo_update_interval != servo_up_int ||
+    sysConfig.wlan_time_trap != trap_val ||
+    sysConfig.espnow_failsafe_mode != esp_failsafe
+  );
+
+  bool wifiChanged = (strcmp(sysConfig.wifi_ssid, ssid.c_str()) != 0 || strcmp(sysConfig.wifi_pass, pass.c_str()) != 0);
+  bool deviceNameChanged = (strcmp(sysConfig.mqtt_device_name, mqtt_device.c_str()) != 0);
+  bool espnowChanged = (sysConfig.espnow_role != esp_role || sysConfig.espnow_channel != esp_channel || strcmp(sysConfig.espnow_peer_mac, esp_peer_mac.c_str()) != 0);
+
+  if (hasChanges) {
+    strlcpy(sysConfig.wifi_ssid, ssid.c_str(), sizeof(sysConfig.wifi_ssid));
+    strlcpy(sysConfig.wifi_pass, pass.c_str(), sizeof(sysConfig.wifi_pass));
+    strlcpy(sysConfig.mqtt_server, mqtt_server.c_str(), sizeof(sysConfig.mqtt_server));
+    sysConfig.mqtt_port = (mqtt_port > 0) ? mqtt_port : 1883;
+    strlcpy(sysConfig.mqtt_user, mqtt_user.c_str(), sizeof(sysConfig.mqtt_user));
+    strlcpy(sysConfig.mqtt_pass, mqtt_pass.c_str(), sizeof(sysConfig.mqtt_pass));
+    strlcpy(sysConfig.mqtt_device_name, mqtt_device.c_str(), sizeof(sysConfig.mqtt_device_name));
+    sysConfig.mqtt_report_interval = interval;
+    sysConfig.display_brightness = brightness;
+    sysConfig.wifi_tx_power = tx_power;
+    sysConfig.espnow_role = esp_role;
+    sysConfig.espnow_channel = esp_channel;
+    strlcpy(sysConfig.espnow_peer_mac, esp_peer_mac.c_str(), sizeof(sysConfig.espnow_peer_mac));
+    sysConfig.servo_update_interval = servo_up_int;
+    sysConfig.wlan_time_trap = trap_val;
+    sysConfig.espnow_failsafe_mode = esp_failsafe;
+    
+    // Clear LMK if role disabled or partner MAC cleared
+    if (esp_role == 0 || esp_peer_mac.length() == 0) {
+      memset(sysConfig.espnow_lmk, 0, sizeof(sysConfig.espnow_lmk));
+    }
+
+    saveConfiguration(); // Saves to LittleFS JSON
+  } else {
+    Serial.println("[LittleFS] No changes detected. Skipping write to avoid flash wear.");
+  }
+
+  // Re-init ESP-NOW if configured values changed
+  if (espnowChanged) {
+    initEspNow();
+  }
+
+  // Apply non-reboot settings immediately
+  if (isTFTMode) {
+    uint8_t rawBrightness = (uint8_t)round(pow(sysConfig.display_brightness / 100.0, 2.2) * 255.0);
+    tft.setBrightness(rawBrightness);
+  }
+  WiFi.setTxPower((wifi_power_t)sysConfig.wifi_tx_power);
+
+  if (hasChanges && (wifiChanged || deviceNameChanged)) {
+    String html = R"rawhtml(
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Einstellungen gespeichert</title>
+    <style>
+        body { background: #0f172a; color: white; text-align: center; padding-top: 100px; font-family: sans-serif; }
+        .box { background: #1e293b; padding: 40px; border-radius: 15px; display: inline-block; border: 1px solid rgba(255,255,255,0.1); }
+        h1 { color: #f87171; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h1>Einstellungen gespeichert!</h1>
+        <p>Der ESP32 startet nun neu, um die geänderten Netzwerk- oder Gerätenamen-Einstellungen anzuwenden.</p>
+        <p>Bitte verbinde dein Gerät wieder mit deinem Heimnetzwerk.</p>
+    </div>
+    <script>setTimeout(function(){ window.location.href = '/'; }, 5000);</script>
+</body>
+</html>
+)rawhtml";
+    server.send(200, "text/html", html);
+    delay(2000);
+    ESP.restart();
+  } else {
+    String html = R"rawhtml(
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Gespeichert</title>
+    <style>
+        body { background: #0f172a; color: white; text-align: center; padding-top: 100px; font-family: sans-serif; }
+        .box { background: #1e293b; padding: 40px; border-radius: 15px; display: inline-block; border: 1px solid rgba(255,255,255,0.1); }
+        h1 { color: #818cf8; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h1>Einstellungen gespeichert!</h1>
+        <p>Die Einstellungen (Sendeleistung, Helligkeit, MQTT-Sende-Intervall) wurden im laufenden Betrieb angewendet.</p>
+        <p>Du wirst gleich zurückgeleitet...</p>
+    </div>
+    <script>setTimeout(function(){ window.location.href = '/settings'; }, 2000);</script>
+</body>
+</html>
+)rawhtml";
+    server.send(200, "text/html", html);
+  }
+}
+
+void handleSettingsReset() {
+  String action = server.arg("action");
+  if (action == "reboot") {
+    String html = R"rawhtml(
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Gerät startet neu</title>
+    <style>
+        body { background: #0f172a; color: white; text-align: center; padding-top: 100px; font-family: sans-serif; }
+        .box { background: #1e293b; padding: 40px; border-radius: 15px; display: inline-block; border: 1px solid rgba(255,255,255,0.1); }
+        h1 { color: #4ade80; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h1>iDry 26 reboot.</h1>
+        <p>Stay calm, we are back online in a second :-)</p>
+    </div>
+    <script>setTimeout(function(){ window.location.href = '/settings'; }, 5000);</script>
+</body>
+</html>
+)rawhtml";
+    server.send(200, "text/html", html);
+    delay(1000);
+    ESP.restart();
+  } else if (action == "defaults") {
+    bool hasChanges = (sysConfig.mqtt_report_interval != 5 || sysConfig.display_brightness != 80 || sysConfig.wifi_tx_power != 52 || sysConfig.servo_update_interval != 5 || sysConfig.wlan_time_trap != 120);
+    
+    if (hasChanges) {
+      sysConfig.mqtt_report_interval = 5;
+      sysConfig.display_brightness = 80;
+      sysConfig.wifi_tx_power = 52;
+      sysConfig.servo_update_interval = 5;
+      sysConfig.wlan_time_trap = 120;
+      saveConfiguration();
+    } else {
+      Serial.println("[LittleFS] Configuration already at default values. Skipping write.");
+    }
+
+    if (isTFTMode) {
+      uint8_t rawBrightness = (uint8_t)round(pow(sysConfig.display_brightness / 100.0, 2.2) * 255.0);
+      tft.setBrightness(rawBrightness);
+    }
+    WiFi.setTxPower((wifi_power_t)sysConfig.wifi_tx_power);
+
+    server.sendHeader("Location", "/settings");
+    server.send(303);
+  } else if (action == "clear") {
+    LittleFS.remove("/config.json");
+    String html = R"rawhtml(
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Gerät zurückgesetzt</title>
+    <style>
+        body { background: #0f172a; color: white; text-align: center; padding-top: 100px; font-family: sans-serif; }
+        .box { background: #1e293b; padding: 40px; border-radius: 15px; display: inline-block; border: 1px solid rgba(255,255,255,0.1); }
+        h1 { color: #ef4444; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h1>Gerät komplett zurückgesetzt!</h1>
+        <p>Der ESP32 startet nun neu und öffnet das Konfigurations-Portal.</p>
+    </div>
+    <script>setTimeout(function(){ window.location.href = '/'; }, 3000);</script>
+</body>
+</html>
+)rawhtml";
+    server.send(200, "text/html", html);
+    delay(2000);
+    ESP.restart();
+  } else if (action == "delete_espnow") {
+    memset(sysConfig.espnow_peer_mac, 0, sizeof(sysConfig.espnow_peer_mac));
+    memset(sysConfig.espnow_lmk, 0, sizeof(sysConfig.espnow_lmk));
+    saveConfiguration();
+    initEspNow(); // Remove peer from driver
+    
+    // Play double error beep
+    tone(BUZZER_PIN, 300, 80); delay(100);
+    tone(BUZZER_PIN, 200, 150); delay(200);
+    noTone(BUZZER_PIN);
+    
+    server.sendHeader("Location", "/settings");
+    server.send(303);
+  } else {
+    server.sendHeader("Location", "/settings");
+    server.send(303);
+  }
+}
+
+void handleEspNowPairApi() {
+  String action = server.arg("action");
+  
+  if (action == "start") {
+    if (server.hasArg("role")) {
+      sysConfig.espnow_role = server.arg("role").toInt();
+    }
+    if (server.hasArg("channel")) {
+      sysConfig.espnow_channel = server.arg("channel").toInt();
+    }
+    
+    if (sysConfig.espnow_role == 0) {
+      server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Rolle Master oder Slave zuerst auswaehlen.\"}");
+      return;
+    }
+    
+    // Dynamically initialize ESP-NOW for the selected role
+    initEspNow();
+    
+    isPairingActive = true;
+    pairingStartTime = millis();
+    lastPairingBeaconTime = 0;
+    
+    if (sysConfig.espnow_role == 1) { // Master
+      // Generate random LMK
+      uint8_t rawLmk[16];
+      for (int i = 0; i < 16; i++) {
+        rawLmk[i] = (uint8_t)(esp_random() & 0xFF);
+      }
+      for (int i = 0; i < 16; i++) {
+        sprintf(proposedLmk + 2 * i, "%02x", rawLmk[i]);
+      }
+      proposedLmk[32] = '\0';
+      originalWifiChannel = WiFi.status() == WL_CONNECTED ? WiFi.channel() : 1;
+      Serial.printf("[Pairing] Master pairing started. Proposed LMK: %s\n", proposedLmk);
+    } else { // Slave
+      currentPairingChannel = sysConfig.espnow_channel;
+      lastChannelHopTime = millis();
+      originalWifiChannel = WiFi.status() == WL_CONNECTED ? WiFi.channel() : 1;
+      esp_wifi_set_channel(currentPairingChannel, WIFI_SECOND_CHAN_NONE);
+      Serial.printf("[Pairing] Slave pairing started on channel %d (Fast Track)\n", currentPairingChannel);
+    }
+    
+    tone(BUZZER_PIN, 880, 80); delay(100);
+    tone(BUZZER_PIN, 1047, 80); delay(100);
+    noTone(BUZZER_PIN);
+    
+    server.send(200, "application/json", "{\"status\":\"ok\",\"message\":\"Pairing gestartet.\"}");
+  } else {
+    isPairingActive = false;
+    if (sysConfig.espnow_role == 2) {
+      esp_wifi_set_channel(originalWifiChannel, WIFI_SECOND_CHAN_NONE);
+    }
+    server.send(200, "application/json", "{\"status\":\"ok\",\"message\":\"Pairing gestoppt.\"}");
+  }
+}
+
+void handleBuzzerTestApi() {
+  String type = server.arg("type");
+  if (type == "local") {
+    server.send(200, "application/json", "{\"status\":\"ok\"}");
+    playWinnerMelody();
+  } else if (type == "remote") {
+    if (strlen(sysConfig.espnow_peer_mac) == 0) {
+      server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Kein Partner gekoppelt.\"}");
+      return;
+    }
+    
+    EspNowMessage msg;
+    msg.pv = localProtocolVersion;
+    msg.type = 2; // Command/Data
+    strlcpy(msg.key, sysConfig.espnow_lmk, sizeof(msg.key));
+    msg.command = 1; // Play winner melody
+    msg.value = 0;
+    
+    uint8_t peerMac[6];
+    sscanf(sysConfig.espnow_peer_mac, "%x:%x:%x:%x:%x:%x", &peerMac[0], &peerMac[1], &peerMac[2], &peerMac[3], &peerMac[4], &peerMac[5]);
+    
+    esp_err_t result = esp_now_send(peerMac, (uint8_t *)&msg, sizeof(EspNowMessage));
+    if (result == ESP_OK) {
+      server.send(200, "application/json", "{\"status\":\"ok\"}");
+    } else {
+      server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Senden fehlgeschlagen.\"}");
+    }
+  } else {
+    server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Ungueltiger Typ.\"}");
+  }
+}
+
+void startCaptivePortal() {
+  portalActive = true;
+  generateUniqueSSID();
+
+  Serial.println("\n--- WiFi / MQTT Portal Mode ---");
+  Serial.printf("Config SSID: %s\n", apSSID.c_str());
+
+  // Shut down E-ink display power draw before activating SoftAP
+  if (!isTFTMode) {
+    Serial.println("[Power] Powering off E-Ink display to stabilize voltage "
+                   "for SoftAP...");
+    display.powerOff();
+  }
+  delay(500); // Allow LDO voltage rail to recover and settle
+
+  // Stop background STA connection scanning to prevent AP signal disruption
+  WiFi.persistent(
+      false); // Prevent NVS flash writes which can corrupt Wi-Fi driver state
+  WiFi.setAutoReconnect(false);
+  WiFi.disconnect(true);
+  WiFi.softAPdisconnect(true);
+  delay(200);
+
+  WiFi.mode(WIFI_AP);
+  WiFi.setSleep(false); // Disable sleep mode to prevent transmitter power-down
+
+  // Force medium-low RF transmission power (11dBm is safe) to test the next
+  // physical threshold
+  WiFi.setTxPower(WIFI_POWER_13dBm); // limit without interference
+  delay(200);
+
+  // Start SoftAP on Channel 6 (standard stable channel, visible, max 4 clients)
+  bool ok = WiFi.softAP(apSSID.c_str(), apPassword, 6, 0, 4);
+
+  // Diagnostic Prints
+  Serial.printf("[AP Debug] softAP startup return: %s\n",
+                ok ? "SUCCESS" : "FAILED");
+  Serial.printf("[AP Debug] Current WiFi Mode: %d (1=STA, 2=AP, 3=AP_STA)\n",
+                (int)WiFi.getMode());
+  Serial.printf("[AP Debug] SoftAP IP Address: %s\n",
+                WiFi.softAPIP().toString().c_str());
+  Serial.printf("[AP Debug] Target SSID: %s (Channel 6)\n", apSSID.c_str());
+  Serial.printf("[AP Debug] Target Password: %s\n", apPassword);
+  Serial.printf("[AP Debug] TX Power Level: %d\n", (int)WiFi.getTxPower());
+
+  dnsServer.start(53, "*", WiFi.softAPIP());
+
+  server.on("/", handlePortalRoot);
+  server.on("/save", handlePortalSave);
+  server.on("/api/data", handleGetData);
+  server.on("/settings", handleSettingsPage);
+  server.on("/settings/save", handleSettingsSave);
+  server.on("/settings/reset", handleSettingsReset);
+  server.on("/api/espnow/pair", handleEspNowPairApi);
+  server.on("/api/espnow/buzzer_test", handleBuzzerTestApi);
+  server.onNotFound(handlePortalRoot);
+  server.begin();
+  initEspNow();
+}
+
+// =====================================================================
+// DISPLAY VISUAL FEEDBACK (DURING BOOT)
+// =====================================================================
+void updateBootScreen(const char *line1, const char *line2) {
+  if (isHeadless)
+    return;
+  if (isTFTMode) {
+    tft.startWrite();
+    tft.clear(TFT_NAVY);
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(2);
+    tft.setCursor(15, 40);
+    tft.print("Boot System...");
+
+    tft.setTextColor(TFT_YELLOW);
+    tft.setCursor(15, 90);
+    tft.print(line1);
+
+    tft.setTextColor(TFT_CYAN);
+    tft.setCursor(15, 140);
+    tft.print(line2);
+    tft.endWrite();
+  } else {
+    display.setRotation(1);
+    display.setFont(&::FreeMonoBold9pt7b);
+    display.firstPage();
+    do {
+      display.fillScreen(GxEPD_WHITE);
+      display.drawRect(0, 0, display.width(), display.height(), GxEPD_BLACK);
+      display.drawRect(4, 4, display.width() - 8, display.height() - 8,
+                       GxEPD_RED);
+
+      display.setTextColor(GxEPD_BLACK);
+      display.setCursor(20, 50);
+      display.print("IDRY26 Bootstrap Config");
+
+      display.setTextColor(GxEPD_RED);
+      display.setCursor(20, 100);
+      display.print(line1);
+
+      display.setTextColor(GxEPD_BLACK);
+      display.setCursor(20, 150);
+      display.print(line2);
+    } while (display.nextPage());
+  }
+}
+
+// =====================================================================
+// MQTT CLIENT & HA AUTO-DISCOVERY SETUP
+// =====================================================================
+
+void sendHADiscoveryConfig(const char *sensorName, const char *displayName,
+                           const char *unit, const char *icon,
+                           const char *deviceClass) {
+  String discoveryTopic = "homeassistant/sensor/" +
+                          String(sysConfig.mqtt_device_name) + "/" +
+                          String(sensorName) + "/config";
+  JsonDocument doc;
+  doc["name"] = displayName;
+  doc["state_topic"] = stateTopic;
+  doc["value_template"] = "{{ value_json." + String(sensorName) + " }}";
+  doc["unique_id"] =
+      String(sysConfig.mqtt_device_name) + "_" + String(sensorName);
+
+  if (unit && strlen(unit) > 0)
+    doc["unit_of_measurement"] = unit;
+  if (icon && strlen(icon) > 0)
+    doc["icon"] = icon;
+  if (deviceClass && strlen(deviceClass) > 0)
+    doc["device_class"] = deviceClass;
+
+  JsonObject dev = doc["device"].to<JsonObject>();
+  dev["identifiers"][0] = String(sysConfig.mqtt_device_name);
+  dev["name"] = String(sysConfig.mqtt_device_name);
+  dev["model"] = "IDRY-26 Multi-Sensor Display";
+  dev["sw_version"] = "2026.07.02";
+  dev["manufacturer"] = "Growblox";
+
+  String payload;
+  serializeJson(doc, payload);
+  mqttClient.publish(discoveryTopic.c_str(), payload.c_str(), true);
+}
+
+void registerHomeAssistantDevices() {
+  Serial.println("[MQTT] Registering entities via HA Auto-Discovery...");
+
+  // Register active temperature sensors dynamically
+  for (int i = 0; i < 2; i++) {
+    if (tempSensors[i].active) {
+      String idStr = "sensor_" + String(i);
+      String nameStr =
+          String((tempSensors[i].type == TempSensor::TYPE_BME280) ? "BME280"
+                                                                  : "SHT3x") +
+          " (" + String(i + 1) + ")";
+
+      sendHADiscoveryConfig((idStr + "_temp").c_str(),
+                            (nameStr + " Temp").c_str(), "°C",
+                            "mdi:thermometer", "temperature");
+      sendHADiscoveryConfig((idStr + "_hum").c_str(),
+                            (nameStr + " Feuchte").c_str(), "%",
+                            "mdi:water-percent", "humidity");
+      sendHADiscoveryConfig((idStr + "_dewpoint").c_str(),
+                            (nameStr + " Taupunkt").c_str(), "°C",
+                            "mdi:thermometer-alert", "temperature");
+
+      if (tempSensors[i].type == TempSensor::TYPE_BME280) {
+        sendHADiscoveryConfig((idStr + "_press").c_str(),
+                              (nameStr + " Druck").c_str(), "hPa", "mdi:gauge",
+                              "pressure");
+      }
+    }
+  }
+
+  // Register active light sensors dynamically
+  for (int i = 0; i < 2; i++) {
+    if (lightSensors[i].active) {
+      String idStr = "light_" + String(i);
+      String nameStr = "TSL2561 (" + String(i + 1) + ")";
+
+      sendHADiscoveryConfig((idStr + "_lux").c_str(),
+                            (nameStr + " Helligkeit").c_str(), "lx",
+                            "mdi:weather-sunny", "illuminance");
+      sendHADiscoveryConfig((idStr + "_broadband").c_str(),
+                            (nameStr + " Breitband").c_str(), "",
+                            "mdi:solar-power", "");
+      sendHADiscoveryConfig((idStr + "_ir").c_str(),
+                            (nameStr + " Infrarot").c_str(), "",
+                            "mdi:brightness-5", "");
+    }
+  }
+
+  sendHADiscoveryConfig("poti_a", "Poti A (Sollwert)", "%", "mdi:knob", "");
+  sendHADiscoveryConfig("poti_b", "Poti B (Gain)", "%", "mdi:knob", "");
+  sendHADiscoveryConfig("poti_c", "Poti C (Cal Offset)", "°", "mdi:knob", "");
+  sendHADiscoveryConfig("linkquality", "Signalstärke", "lqi", "mdi:signal", "");
+}
+
+// =====================================================================
+// AUTO-DETECTION VIA RESET-INDUCED STATE CHANGE
+// =====================================================================
+bool detectDisplayType() {
+  Serial.println(
+      "[Auto-Detect] Starting display presence and type diagnostics...");
+
+  pinMode(EPD_BUSY, INPUT_PULLUP);
+  delay(50); // Let the levels settle
+  int busy_initial = digitalRead(EPD_BUSY);
+
+  Serial.printf("[Auto-Detect] Initial BUSY line state (with Pull-Up): %d\n",
+                busy_initial);
+
+  // Pulse EPD_RST to verify pin behavior
+  pinMode(EPD_RST, OUTPUT);
+  digitalWrite(EPD_RST, HIGH);
+  delay(10);
+  int busy_rst_high_before = digitalRead(EPD_BUSY);
+
+  digitalWrite(EPD_RST, LOW);
+  delay(20);
+  int busy_rst_low = digitalRead(EPD_BUSY);
+
+  digitalWrite(EPD_RST, HIGH);
+  delay(10);
+
+  Serial.printf("[Auto-Detect] Reset diagnostic: before=%d, during=%d\n",
+                busy_rst_high_before, busy_rst_low);
+
+  if (busy_initial == LOW && busy_rst_high_before == LOW && busy_rst_low == LOW) {
+    Serial.println("[Auto-Detect] Result: ILI9341 TFT Display detected "
+                   "(Backlight line pulled LOW)");
+    isHeadless = false;
+    return true; // TFT Mode
+  } else if (busy_rst_high_before != busy_rst_low) {
+    Serial.println("[Auto-Detect] Result: e-Paper Display detected (BUSY state "
+                   "change active)");
+    isHeadless = false;
+    return false; // e-Paper Mode
+  } else {
+    Serial.println("[Auto-Detect] Result: No Display detected (Headless Mode)");
+    isHeadless = true;
+    return false; // Headless Mode (isTFTMode = false)
+  }
+}
+
+// WiFi Event Handler for Instant Reconnection
+void WiFiEvent(WiFiEvent_t event) {
+  if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+    Serial.println("[WLAN] Event: WiFi connection lost.");
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(2000);
+  Serial.println("\n=== Multi-Display Bootstrap Boot ===");
+
+  // Initialize Buzzer
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
+
+  // Startup melody (Ascending arpeggio)
+  tone(BUZZER_PIN, 523, 100);  // C5
+  delay(120);
+  tone(BUZZER_PIN, 659, 100);  // E5
+  delay(120);
+  tone(BUZZER_PIN, 784, 100);  // G5
+  delay(120);
+  tone(BUZZER_PIN, 1047, 120); // C6
+  delay(140);
+  tone(BUZZER_PIN, 1319, 150); // E6
+  delay(170);
+  tone(BUZZER_PIN, 1568, 300); // G6
+  delay(350);
+  noTone(BUZZER_PIN);
+
+  // Initialize LEDC PWM channel for Servo control on GPIO 18 (50 Hz, 14-bit
+  // resolution)
+  ledcSetup(SERVO_LEDC_CHANNEL, 50, 14);
+  ledcAttachPin(SERVO_PIN, SERVO_LEDC_CHANNEL);
+
+  // Set espClient socket connection timeout to 500ms to prevent blocking MQTT client connects
+  espClient.setTimeout(500);
+
+  // Register WiFi Event handler for instant reconnects
+  WiFi.onEvent(WiFiEvent);
+
+  // Load Configuration first to retrieve display and network preferences
+  isConfigLoaded = loadConfiguration();
+
+  // Perform display type autodetect
+  isTFTMode = detectDisplayType();
+
+  // Fast-boot active display driver
+  if (isHeadless) {
+    Serial.println("Starting Headless Mode (No Display Connected)...");
+  } else if (isTFTMode) {
+    Serial.println("Starting TFT Mode (LovyanGFX)...");
+    tft.init();
+    tft.setRotation(1);
+    uint8_t rawBrightness = (uint8_t)round(pow(sysConfig.display_brightness / 100.0, 2.2) * 255.0);
+    tft.setBrightness(rawBrightness);
+    tft.clear(TFT_NAVY);
+  } else {
+    Serial.println("Starting e-Paper Mode (GxEPD2)...");
+    pinMode(EPD_BUSY, INPUT_PULLUP);
+    SPI.begin(EPD_SCK, EPD_MISO, EPD_MOSI, -1);
+    display.init(115200, true, 2, false);
+    SPI.begin(EPD_SCK, EPD_MISO, EPD_MOSI, -1);
+    pinMode(EPD_CS, OUTPUT);
+    digitalWrite(EPD_CS, HIGH);
+  }
+
+  if (isConfigLoaded && strlen(sysConfig.wifi_ssid) > 0) {
+    Serial.printf("[WLAN] Connecting to: %s\n", sysConfig.wifi_ssid);
+    updateBootScreen("WLAN Verbinden...", sysConfig.wifi_ssid);
+
+    WiFi.persistent(false); // Prevent flash wear and config corruption
+    WiFi.disconnect(false); // DO NOT turn off the radio!
+    WiFi.mode(WIFI_OFF);
+    delay(200);
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(
+        false); // Disable power-save mode for maximum RF stability/speed
+    delay(200);
+    WiFi.begin(sysConfig.wifi_ssid, sysConfig.wifi_pass);
+    WiFi.setTxPower((wifi_power_t)sysConfig.wifi_tx_power);
+
+    // Timeout verification (Wait 15 seconds maximum)
+    unsigned long connStart = millis();
+    bool isConnected = false;
+    while (millis() - connStart < 15000) {
+      if (WiFi.status() == WL_CONNECTED) {
+        isConnected = true;
+        break;
+      }
+      delay(100);
+    }
+
+    if (isConnected) {
+      Serial.printf("[WLAN] Connected! IP: %s\n",
+                    WiFi.localIP().toString().c_str());
+      updateBootScreen("WLAN Verbunden!", WiFi.localIP().toString().c_str());
+
+      // Scan I2C Devices
+      scanI2C();
+
+      // Web Server Init (Real-time monitor)
+      server.on("/", handlePortalRoot);
+      server.on("/api/data", handleGetData);
+      server.on("/settings", handleSettingsPage);
+      server.on("/settings/save", handleSettingsSave);
+      server.on("/settings/reset", handleSettingsReset);
+      server.on("/api/espnow/pair", handleEspNowPairApi);
+      server.on("/api/espnow/buzzer_test", handleBuzzerTestApi);
+      server.begin();
+      initEspNow();
+
+      // Setup MQTT Settings
+      mqttClient.setServer(sysConfig.mqtt_server, sysConfig.mqtt_port);
+      baseTopic = "idry/" + String(sysConfig.mqtt_device_name);
+      stateTopic = baseTopic + "/state";
+
+      delay(1000);
+    } else {
+      Serial.println(
+          "[WLAN] Connection timed out! Launching Captive Config Portal...");
+      updateBootScreen("WLAN Timeout!", "Starte Portal...");
+      delay(1000);
+      startCaptivePortal();
+    }
+  } else {
+    Serial.println(
+        "[WLAN] No configuration stored. Starting Captive Config Portal...");
+    updateBootScreen("Kein Setup!", "Starte Portal...");
+    delay(1000);
+    startCaptivePortal();
+  }
+}
+
+void loop() {
+  // =====================================================================
+  // ESP-NOW PAIRING TICK
+  // =====================================================================
+  if (isPairingActive) {
+    if (millis() - pairingStartTime >= 30000) {
+      Serial.println("[Pairing] Timeout! Exiting pairing mode.");
+      isPairingActive = false;
+      if (sysConfig.espnow_role == 2) {
+        esp_wifi_set_channel(originalWifiChannel, WIFI_SECOND_CHAN_NONE);
+      }
+      tone(BUZZER_PIN, 150, 400); delay(450); noTone(BUZZER_PIN);
+      initEspNow();
+    } else {
+      if (sysConfig.espnow_role == 1) { // Master broadcasts every 500ms
+        if (millis() - lastPairingBeaconTime >= 500) {
+          lastPairingBeaconTime = millis();
+          
+          EspNowMessage msg;
+          msg.pv = localProtocolVersion;
+          msg.type = 0; // Beacon
+          strlcpy(msg.key, proposedLmk, sizeof(msg.key));
+          msg.command = 0;
+          msg.value = 0;
+          
+          uint8_t broadcastMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+          
+          esp_now_peer_info_t peerInfo;
+          memset(&peerInfo, 0, sizeof(peerInfo));
+          memcpy(peerInfo.peer_addr, broadcastMac, 6);
+          peerInfo.channel = WiFi.status() == WL_CONNECTED ? WiFi.channel() : 1;
+          peerInfo.encrypt = false;
+          
+          if (!esp_now_is_peer_exist(broadcastMac)) {
+            esp_now_add_peer(&peerInfo);
+          }
+          
+          esp_now_send(broadcastMac, (uint8_t *)&msg, sizeof(EspNowMessage));
+          Serial.println("[Pairing] Master sending beacon...");
+        }
+      } else if (sysConfig.espnow_role == 2) { // Slave channel hopping
+        unsigned long timeInPairing = millis() - pairingStartTime;
+        if (timeInPairing >= 1200) {
+          if (millis() - lastChannelHopTime >= 1200) {
+            lastChannelHopTime = millis();
+            
+            currentPairingChannel++;
+            if (currentPairingChannel > 13) {
+              currentPairingChannel = 1;
+            }
+            if (currentPairingChannel == sysConfig.espnow_channel) {
+              currentPairingChannel++;
+              if (currentPairingChannel > 13) {
+                currentPairingChannel = 1;
+              }
+            }
+            esp_wifi_set_channel(currentPairingChannel, WIFI_SECOND_CHAN_NONE);
+            Serial.printf("[Pairing] Slave hopping to channel %d...\n", currentPairingChannel);
+          }
+        }
+      }
+    }
+  }
+
+  // =====================================================================
+  // ESP-NOW KEEP-ALIVE PING TICK (Every 1 second from Master to Slave)
+  // =====================================================================
+  static unsigned long lastEspNowPingTime = 0;
+  if (!isPairingActive && sysConfig.espnow_role == 1 && strlen(sysConfig.espnow_peer_mac) > 0) {
+    if (millis() - lastEspNowPingTime >= 1000) {
+      lastEspNowPingTime = millis();
+      EspNowMessage pingMsg;
+      pingMsg.pv = localProtocolVersion;
+      pingMsg.type = 2; // Data/Command
+      strlcpy(pingMsg.key, sysConfig.espnow_lmk, sizeof(pingMsg.key));
+      pingMsg.command = 2; // Ping-Request
+      pingMsg.value = rotorPosition;
+      
+      uint8_t peerMac[6];
+      if (sscanf(sysConfig.espnow_peer_mac, "%x:%x:%x:%x:%x:%x", &peerMac[0], &peerMac[1], &peerMac[2], &peerMac[3], &peerMac[4], &peerMac[5]) == 6) {
+        esp_now_send(peerMac, (uint8_t *)&pingMsg, sizeof(EspNowMessage));
+      }
+    }
+  }
+
+  // =====================================================================
+  // ESP-NOW SLAVE RECONNECTION WATCHDOG (>20s Connection Loss)
+  // =====================================================================
+  static unsigned long lastSlaveStackResetTime = 0;
+  if (!isPairingActive && sysConfig.espnow_role == 2 && strlen(sysConfig.espnow_peer_mac) > 0) {
+    if (lastEspNowRxTime == 0 || (millis() - lastEspNowRxTime > 20000)) {
+      if (millis() - lastSlaveStackResetTime >= 15000) {
+        lastSlaveStackResetTime = millis();
+        Serial.println("[ESP-NOW] Slave: Master connection lost (>20s). Aggressively re-initializing ESP-NOW stack...");
+        initEspNow();
+      }
+    }
+  }
+
+  if (portalActive) {
+    dnsServer.processNextRequest();
+    server.handleClient();
+    return;
+  }
+
+  server.handleClient();
+
+  // Run potentiometer check and servo target angle calculations continuously in the loop
+  updateServoRamping(false);
+
+  // Continuous non-blocking Servo Motion Profiling (Sine Ease-In-Ease-Out
+  // Softstart/Stop Ramping)
+  if (servoMoving) {
+    unsigned long elapsed = millis() - servoMoveStartTime;
+    if (elapsed >= (unsigned long)servoMoveDuration) {
+      currentServoAngle = targetServoAngle;
+      servoMoving = false;
+      servoFinishedPending = true;
+      servoFinishedTime = millis();
+    } else {
+      float t = (float)elapsed / servoMoveDuration;
+      // Sine ease-in-ease-out curve
+      float smooth_t = 0.5f * (1.0f - cos(t * PI));
+      currentServoAngle =
+          startServoAngle + smooth_t * (targetServoAngle - startServoAngle);
+    }
+
+    // Rate limit physical servo updates (LEDC register writes) to 50Hz (every
+    // 20ms) or when movement finishes. This prevents register congestion /
+    // driver lockup on the ESP32.
+    static unsigned long lastServoWriteTime = 0;
+    static float lastWrittenAngle = -1.0f;
+    if (millis() - lastServoWriteTime >= 20 || !servoMoving ||
+        fabs(currentServoAngle - lastWrittenAngle) > 0.05f) {
+      lastServoWriteTime = millis();
+      lastWrittenAngle = currentServoAngle;
+
+      // Convert angle (0 to 180 deg) to duty cycle ticks (500us to 2500us pulse
+      // width)
+      float pulseWidthUs = 500.0f + (currentServoAngle / 180.0f) * 2000.0f;
+      uint32_t duty = (pulseWidthUs / 20000.0f) * 16384.0f;
+      ledcWrite(SERVO_LEDC_CHANNEL, duty);
+    }
+  }
+
+  if (servoFinishedPending && (millis() - servoFinishedTime >= 1000)) {
+    servoFinishedPending = false;
+    ledcWrite(SERVO_LEDC_CHANNEL, 0);
+    Serial.println("[Servo] Idle. Detached power to stop buzzing.");
+  }
+
+  // Connect / Maintain Wi-Fi Connection & Active Link Watchdog
+  static unsigned long lastWifiCheck = 0;
+  static unsigned long connectedSince = 0;
+  static unsigned long lastMqttOk = 0;
+
+  // WLAN Watchdog Time Trap
+  static unsigned long disconnectStartTime = 0;
+  static bool timeTrapAlarmTriggered = false;
+
+  // Check weekly watchdog reset timer
+  checkWeeklyWatchdogReset();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    disconnectStartTime = 0;
+    timeTrapAlarmTriggered = false;
+
+    if (!ntpInitialized) {
+      ntpInitialized = true;
+      configTzTime("CET-1CEST,M3.5.0,M10.5.0/3", "pool.ntp.org", "time.nist.gov", "time.google.com");
+      Serial.println("[NTP] Initialized SNTP client for Europe/Berlin time zone.");
+    }
+
+    if (connectedSince == 0) {
+      connectedSince = millis();
+      lastMqttOk = millis();
+    }
+
+    // Watchdog 1: Check RSSI and test gateway reachability. If the router goes
+    // offline, RSSI will report 0 or gateway TCP test fails.
+    static unsigned long lastGatewayCheck = 0;
+    if (millis() - connectedSince > 8000) { // Allow 8s post-connection buffer
+      int rssi = WiFi.RSSI();
+      if (rssi == 0 || rssi < -96) {
+        Serial.printf("[WLAN] Watchdog: Router disappeared (RSSI = %d dBm). "
+                      "Forcing disconnect...\n",
+                      rssi);
+        WiFi.disconnect(true);
+        connectedSince = 0;
+      } else if (millis() - lastGatewayCheck >=
+                 2000) { // Verify gateway status every 2 seconds
+        lastGatewayCheck = millis();
+        if (!checkGatewayReachable()) {
+          Serial.println("[WLAN] Watchdog: Gateway unreachable (Active TCP "
+                         "check failed). Forcing disconnect...");
+          WiFi.disconnect(true);
+          connectedSince = 0;
+        }
+      }
+    }
+  } else {
+    connectedSince = 0;
+
+    // Time Trap Watchdog evaluation
+    if (sysConfig.wlan_time_trap > 0) {
+      if (disconnectStartTime == 0) {
+        disconnectStartTime = millis();
+        Serial.println("[WLAN] Immediate connection loss alarm! Playing buzzer melody.");
+        tone(BUZZER_PIN, 500, 250);
+        delay(350);
+        tone(BUZZER_PIN, 500, 250);
+        delay(250);
+        noTone(BUZZER_PIN);
+      } else if (millis() - disconnectStartTime >= (unsigned long)(sysConfig.wlan_time_trap * 1000)) {
+        disconnectStartTime = millis(); // Reset timer to repeat alarm at interval
+        Serial.println("[WLAN] Watchdog repeat alarm triggered! Playing buzzer melody.");
+        tone(BUZZER_PIN, 500, 250);
+        delay(350);
+        tone(BUZZER_PIN, 500, 250);
+        delay(250);
+        noTone(BUZZER_PIN);
+      }
+    }
+
+    if (millis() - lastWifiCheck >=
+        5000) { // Try to reconnect every 5s if disconnected
+      lastWifiCheck = millis();
+      Serial.printf("[WLAN] Connection lost. Reconnecting to %s...\n",
+                    sysConfig.wifi_ssid);
+      WiFi.begin(sysConfig.wifi_ssid, sysConfig.wifi_pass);
+    }
+  }
+
+  // Connect / Maintain MQTT Connection
+  if (WiFi.status() == WL_CONNECTED && strlen(sysConfig.mqtt_server) > 0) {
+    if (mqttClient.connected()) {
+      lastMqttOk = millis();
+    } else {
+      // Watchdog 2: Zombie Connection check. If WiFi reports connected but MQTT
+      // cannot connect for 25s
+      if (millis() - lastMqttOk > 25000) {
+        Serial.println("[WLAN] Watchdog: Zombie link detected (MQTT "
+                       "unreachable for 25s). Resetting WiFi...");
+        WiFi.disconnect(true);
+        connectedSince = 0;
+        lastMqttOk = millis();
+      }
+    }
+    static unsigned long lastMqttConnectAttempt = 0;
+    if (!mqttClient.connected() && millis() - lastMqttConnectAttempt >= 10000) {
+      lastMqttConnectAttempt = millis();
+      Serial.println("[MQTT] Connecting to broker...");
+      String clientID = String(sysConfig.mqtt_device_name) + "-" +
+                        String(random(0xffff), HEX);
+
+      bool mqttConnected = false;
+      if (strlen(sysConfig.mqtt_user) > 0) {
+        mqttConnected = mqttClient.connect(
+            clientID.c_str(), sysConfig.mqtt_user, sysConfig.mqtt_pass);
+      } else {
+        mqttConnected = mqttClient.connect(clientID.c_str());
+      }
+
+      if (mqttConnected) {
+        Serial.println("[MQTT] Broker Connected!");
+        registerHomeAssistantDevices();
+      } else {
+        Serial.printf(
+            "[MQTT] Connection failed, rc=%d. Retrying in 10s.\n",
+            mqttClient.state());
+      }
+    }
+    mqttClient.loop();
+  }
+
+  static unsigned long lastUpdate = 0;
+  static int updateCount = 0;
+
+  // Run Display and Sensor Loop every 1 second
+  unsigned long interval = 1000;
+
+  if (millis() - lastUpdate >= interval) {
+    lastUpdate = millis();
+    updateCount++;
+
+    // Read real sensors every 1 second (keeps Web UI and MQTT fresh)
+    readSensors();
+
+    // Trigger a closed-loop servo update only at the configured interval
+    static unsigned long lastServoUpdateCall = 0;
+    if (millis() - lastServoUpdateCall >= (unsigned long)(sysConfig.servo_update_interval * 1000)) {
+      lastServoUpdateCall = millis();
+      updateServoRamping(true);
+    }
+
+    // Publish to MQTT State based on configured interval (converted to seconds)
+    if (updateCount % (sysConfig.mqtt_report_interval * 60) == 0 && mqttClient.connected()) {
+      JsonDocument doc;
+
+      for (int i = 0; i < 2; i++) {
+        if (tempSensors[i].active) {
+          String idStr = "sensor_" + String(i);
+          doc[idStr + "_temp"] = isnan(tempSensors[i].temperature)
+                                     ? JsonVariant()
+                                     : tempSensors[i].temperature;
+          doc[idStr + "_hum"] = isnan(tempSensors[i].humidity)
+                                    ? JsonVariant()
+                                    : tempSensors[i].humidity;
+          float dp = calculateDewPoint(tempSensors[i].temperature,
+                                       tempSensors[i].humidity);
+          doc[idStr + "_dewpoint"] = isnan(dp) ? JsonVariant() : dp;
+
+          if (tempSensors[i].type == TempSensor::TYPE_BME280) {
+            doc[idStr + "_press"] = isnan(tempSensors[i].pressure)
+                                        ? JsonVariant()
+                                        : tempSensors[i].pressure;
+          }
+        }
+      }
+
+      for (int i = 0; i < 2; i++) {
+        if (lightSensors[i].active) {
+          String idStr = "light_" + String(i);
+          doc[idStr + "_lux"] =
+              isnan(lightSensors[i].lux) ? JsonVariant() : lightSensors[i].lux;
+          doc[idStr + "_broadband"] = lightSensors[i].broadband;
+          doc[idStr + "_ir"] = lightSensors[i].ir;
+        }
+      }
+
+      doc["poti_a"] = potiAVal;
+      doc["poti_b"] = potiBVal;
+      doc["poti_c"] = potiCVal;
+      doc["servo_update_interval"] = sysConfig.servo_update_interval;
+      doc["espnow_role"] = sysConfig.espnow_role;
+      doc["espnow_last_seen_ms"] = (sysConfig.espnow_role > 0 && strlen(sysConfig.espnow_peer_mac) > 0) ? ((lastEspNowRxTime == 0) ? -1 : (long)(millis() - lastEspNowRxTime)) : -1;
+      doc["espnow_interval_ms"] = (sysConfig.espnow_role > 0 && strlen(sysConfig.espnow_peer_mac) > 0) ? avgEspNowIntervalMs : 0;
+      doc["linkquality"] = (WiFi.status() == WL_CONNECTED)
+                               ? map(WiFi.RSSI(), -100, -30, 0, 255)
+                               : 0;
+      doc["watchdog_reset_countdown"] = getWatchdogResetCountdown();
+
+      String statePayload;
+      serializeJson(doc, statePayload);
+      mqttClient.publish(stateTopic.c_str(), statePayload.c_str());
+      Serial.println("[MQTT] Published live sensor state data.");
+    }
+
+    if (isHeadless) {
+      // Headless Mode: skip drawing to display to conserve power/speed
+    } else if (isTFTMode) {
+      // --- NATIVE TFT INTERFACE (Outlined UI with font size 1 for compact
+      // display) ---
+      tft.startWrite();
+      tft.clear(TFT_BLACK);
+
+      tft.drawRect(0, 0, tft.width(), tft.height(), TFT_GREEN);
+      tft.drawRect(4, 4, tft.width() - 8, tft.height() - 8, TFT_BLUE);
+
+      // Header (size 2)
+      tft.setTextColor(TFT_YELLOW);
+      tft.setTextSize(2);
+      tft.setCursor(15, 20);
+      tft.printf(sysConfig.mqtt_device_name);
+
+      tft.setTextColor(TFT_WHITE);
+      tft.setTextSize(1);
+      tft.setCursor(15, 50);
+      if (WiFi.status() == WL_CONNECTED) {
+        tft.printf("IP: %s", WiFi.localIP().toString().c_str());
+      } else {
+        tft.printf("reconnecting [%s]", sysConfig.wifi_ssid);
+      }
+
+      // Details section (size 1)
+      int cursorY = 70;
+      tft.setTextColor(TFT_ORANGE);
+
+      for (int i = 0; i < 2; i++) {
+        if (tempSensors[i].active) {
+          tft.setCursor(15, cursorY);
+          String sType = (tempSensors[i].type == TempSensor::TYPE_BME280)
+                             ? "BME280"
+                             : "SHT3x";
+          float dp = calculateDewPoint(tempSensors[i].temperature,
+                                       tempSensors[i].humidity);
+          tft.printf("%s [0x%02X]: %.1f C, %.1f %% (Taup: %.1f C)",
+                     sType.c_str(), tempSensors[i].address,
+                     tempSensors[i].temperature, tempSensors[i].humidity, dp);
+          cursorY += 16;
+          if (tempSensors[i].type == TempSensor::TYPE_BME280) {
+            tft.setCursor(15, cursorY);
+            tft.printf("  Druck: %.1f hPa", tempSensors[i].pressure);
+            cursorY += 16;
+          }
+        }
+      }
+
+      for (int i = 0; i < 2; i++) {
+        if (lightSensors[i].active) {
+          tft.setTextColor(TFT_CYAN);
+          tft.setCursor(15, cursorY);
+          tft.printf("TSL2561 [0x%02X]: %.1f lx (B:%u IR:%u)",
+                     lightSensors[i].address, lightSensors[i].lux,
+                     lightSensors[i].broadband, lightSensors[i].ir);
+          cursorY += 16;
+        }
+      }
+
+      tft.setTextColor(TFT_GREEN);
+      tft.setCursor(15, cursorY);
+      tft.printf("Poti A (Sollwert): %.1f %%", potiAVal);
+      cursorY += 14;
+      tft.setCursor(15, cursorY);
+      tft.printf("Poti B (Gain):     %.1f %%", potiBVal);
+      cursorY += 14;
+      tft.setCursor(15, cursorY);
+      tft.printf("Poti C (Cal Off):  %.0f Grad", potiCVal);
+      cursorY += 14;
+      tft.setCursor(15, cursorY);
+      tft.printf("Rotor-Stellung:    %.0f %%", rotorPosition);
+
+      // Dynamic activity dot
+      tft.fillCircle(210, 20, 6,
+                     tft.color888(random(255), random(255), random(255)));
+
+      tft.endWrite();
+    } else {
+      // --- NATIVE E-PAPER INTERFACE (Refreshed every 10 loop cycles to prevent
+      // burnout) ---
+      if (updateCount % 10 == 0) {
+        Serial.println("[e-Paper] Re-drawing screen...");
+        display.setRotation(1);
+        display.setFont(&::FreeMonoBold9pt7b);
+
+        display.firstPage();
+        do {
+          display.fillScreen(GxEPD_WHITE);
+          display.drawRect(0, 0, display.width(), display.height(),
+                           GxEPD_BLACK);
+          display.drawRect(4, 4, display.width() - 8, display.height() - 8,
+                           GxEPD_RED);
+
+          // Title
+          display.setTextColor(GxEPD_BLACK);
+          display.setCursor(15, 30);
+          if (WiFi.status() == WL_CONNECTED) {
+            display.printf("%s E-Ink", sysConfig.mqtt_device_name);
+          } else {
+            display.printf("recon [%s]", sysConfig.wifi_ssid);
+          }
+
+          int epY = 60;
+          for (int i = 0; i < 2; i++) {
+            if (tempSensors[i].active) {
+              display.setCursor(15, epY);
+              String sType = (tempSensors[i].type == TempSensor::TYPE_BME280)
+                                 ? "BME280"
+                                 : "SHT3x";
+              float dp = calculateDewPoint(tempSensors[i].temperature,
+                                           tempSensors[i].humidity);
+              display.printf("%s: %.1fC %.1f%% (T:%.1fC)", sType.c_str(),
+                             tempSensors[i].temperature,
+                             tempSensors[i].humidity, dp);
+              epY += 28;
+            }
+          }
+
+          for (int i = 0; i < 2; i++) {
+            if (lightSensors[i].active) {
+              display.setTextColor(GxEPD_RED);
+              display.setCursor(15, epY);
+              display.printf("L%d: %.1flx B:%u", i, lightSensors[i].lux,
+                             lightSensors[i].broadband);
+              epY += 28;
+            }
+          }
+
+          display.setTextColor(GxEPD_BLACK);
+          display.setCursor(15, epY);
+          display.printf("A:%.0f%% B:%.0f%% C:%.0f", potiAVal, potiBVal,
+                         potiCVal);
+          epY += 28;
+          display.setCursor(15, epY);
+          display.printf("Rotor: %.0f %%", rotorPosition);
+
+        } while (display.nextPage());
+      }
+    }
+  }
+
+  // 5-Minute Millis Time Trap for Low Humidity Alarm Check
+  static unsigned long lastAlarmCheckTime = 0;
+  if (millis() - lastAlarmCheckTime >= 300000) { // 5 minutes (300,000 ms)
+    lastAlarmCheckTime = millis();
+    
+    // Use the promoted master inside sensor (tempSensors[0]) for the primary check.
+    // If not active, fall back to tempSensors[1] if active.
+    float hum_inside = NAN;
+    if (tempSensors[0].active && !isnan(tempSensors[0].humidity)) {
+      hum_inside = tempSensors[0].humidity;
+    } else if (tempSensors[1].active && !isnan(tempSensors[1].humidity)) {
+      hum_inside = tempSensors[1].humidity;
+    }
+
+    if (!isnan(hum_inside) && hum_inside < potiAVal) {
+      Serial.printf("[Alarm] Inside humidity (%.1f%%) is below target (%.1f%%). Playing warning chime.\n", hum_inside, potiAVal);
+      // Play 3 pleasant descending tones, 500ms each, no pause
+      tone(BUZZER_PIN, 523, 500); // C5 (523 Hz)
+      delay(500);
+      tone(BUZZER_PIN, 440, 500); // A4 (440 Hz)
+      delay(500);
+      tone(BUZZER_PIN, 349, 500); // F4 (349 Hz)
+      delay(500);
+      noTone(BUZZER_PIN);
+    }
+  }
+
+  // 5-Minute Millis Time Trap for Thermodynamic Bypass Alarm Check (offset by 5 seconds to prevent collision)
+  static unsigned long lastBypassAlarmCheckTime = 5000; // start with 5 seconds offset
+  if (millis() - lastBypassAlarmCheckTime >= 300000) { // 5 minutes (300,000 ms)
+    lastBypassAlarmCheckTime = millis();
+    
+    if (bypassModeActive) {
+      float hum_inside = NAN;
+      if (tempSensors[0].active && !isnan(tempSensors[0].humidity)) {
+        hum_inside = tempSensors[0].humidity;
+      } else if (tempSensors[1].active && !isnan(tempSensors[1].humidity)) {
+        hum_inside = tempSensors[1].humidity;
+      }
+
+      // Only play the bypass alarm if the inside is still too wet (above/equal to target humidity)
+      if (isnan(hum_inside) || hum_inside >= potiAVal) {
+        Serial.println("[Alarm] Thermodynamic bypass is active (Outside humidity too high). Playing warning chime.");
+        // Play 3 very short tones of 500 Hz with a short pause, 1s long pause, and then repeat
+        for (int repeat = 0; repeat < 2; repeat++) {
+          for (int note = 0; note < 3; note++) {
+            tone(BUZZER_PIN, 500, 80); // 500 Hz, 80ms duration
+            delay(160); // 80ms sound + 80ms pause
+          }
+          if (repeat == 0) {
+            delay(840); // 1000ms total pause between sequences (1000 - 160 = 840ms extra delay)
+          }
+        }
+        noTone(BUZZER_PIN);
+      }
+    }
+  }
+}
