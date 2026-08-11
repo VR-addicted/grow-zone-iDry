@@ -21,7 +21,7 @@
 #include <WiFiClientSecure.h>
 
 // Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 23;
+const int localFirmwareVersion = 24;
 
 // Sensor Libraries
 #include <Adafruit_BME280.h>
