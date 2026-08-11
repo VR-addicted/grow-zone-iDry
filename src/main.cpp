@@ -21,7 +21,7 @@
 #include <WiFiClientSecure.h>
 
 // Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 16;
+const int localFirmwareVersion = 17;
 
 // Sensor Libraries
 #include <Adafruit_BME280.h>
@@ -1688,8 +1688,9 @@ void handleGetHistory() {
                                                    : historyBuffer[idx].temp_1_max;
     s["h1"] = isnan(historyBuffer[idx].hum_1_max) ? JsonVariant()
                                                   : historyBuffer[idx].hum_1_max;
-    s["l0"] = historyBuffer[idx].lux_0_max;
-    s["l1"] = historyBuffer[idx].lux_1_max;
+    s["r"] = historyBuffer[idx].rotor_max;
+    s["el"] = historyBuffer[idx].espnow_loss_sec;
+    s["ml"] = historyBuffer[idx].mqtt_loss_sec;
     s["rssi"] = historyBuffer[idx].rssi_min;
   }
 
@@ -4395,6 +4396,7 @@ void startCaptivePortal() {
   server.on("/", handlePortalRoot);
   server.on("/save", handlePortalSave);
   server.on("/api/data", handleGetData);
+  server.on("/api/history", handleGetHistory);
   server.on("/settings", handleSettingsPage);
   server.on("/settings/save", handleSettingsSave);
   server.on("/settings/reset", handleSettingsReset);
