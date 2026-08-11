@@ -21,7 +21,7 @@
 #include <WiFiClientSecure.h>
 
 // Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 21;
+const int localFirmwareVersion = 22;
 
 // Sensor Libraries
 #include <Adafruit_BME280.h>
@@ -1791,7 +1791,8 @@ void handleGetHistory() {
   live1m["r"] = (rotorPosition > b1m_rotor_max) ? rotorPosition : b1m_rotor_max;
   live1m["el"] = b1m_espnow_loss_sec;
   live1m["ml"] = b1m_mqtt_loss_sec;
-  int8_t activeRssi = (WiFi.status() == WL_CONNECTED) ? (int8_t)WiFi.RSSI() : -100;
+  int8_t activeRssi =
+      (WiFi.status() == WL_CONNECTED) ? (int8_t)WiFi.RSSI() : -100;
   live1m["rssi"] = (b1m_rssi_min == 0) ? activeRssi : b1m_rssi_min;
 
   // 24-Hour Array (5-minute resolution for modal zoom)
@@ -2326,24 +2327,6 @@ void handlePortalRoot() {
                     if (benchEl) {
                         benchEl.innerText = data.loops_per_sec || 0;
                     }
-
-                    // Update live candle in history60m in real time every 1 second!
-                    if (history60m && history60m.length > 0) {
-                        let liveSample = history60m[history60m.length - 1];
-                        if (data.sensors && data.sensors[0]) {
-                            liveSample.t0 = data.sensors[0].temp;
-                            liveSample.h0 = data.sensors[0].hum;
-                        }
-                        if (data.sensors && data.sensors[1]) {
-                            liveSample.t1 = data.sensors[1].temp;
-                            liveSample.h1 = data.sensors[1].hum;
-                        }
-                        if (data.lights && data.lights[0]) liveSample.l0 = data.lights[0].lux;
-                        if (data.lights && data.lights[1]) liveSample.l1 = data.lights[1].lux;
-                        liveSample.r = data.rotor_position;
-                        liveSample.rssi = data.rssi;
-                        renderAllCharts();
-                    }
                 })
                 .catch(err => {
                     // Connection lost to ESP32
@@ -2616,7 +2599,7 @@ void handlePortalRoot() {
         }
 
         setInterval(updateData, 1000);
-        setInterval(fetchHistory, 2000);
+        setInterval(fetchHistory, 1000);
         updateData();
         fetchHistory();
     </script>
@@ -5352,6 +5335,7 @@ void loop() {
 
     // Read real sensors every 1 second (keeps Web UI and MQTT fresh)
     readSensors();
+    updateHistoryAccumulators1s();
 
     // Trigger a closed-loop servo update only at the configured interval
     static unsigned long lastServoUpdateCall = 0;
