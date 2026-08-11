@@ -21,7 +21,7 @@
 #include <WiFiClientSecure.h>
 
 // Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 14;
+const int localFirmwareVersion = 15;
 
 // Sensor Libraries
 #include <Adafruit_BME280.h>
@@ -199,6 +199,46 @@ unsigned long lastChannelHopTime = 0;
 #include <time.h>
 
 char proposedLmk[33] = "";
+
+// =====================================================================
+// 3-HOUR RAM HISTORY RING BUFFER & DELTA PEAK ACCUMULATORS
+// =====================================================================
+struct HistorySample {
+  float temp_0_max;
+  float hum_0_max;
+  float temp_1_max;
+  float hum_1_max;
+  float lux_0_max;
+  float lux_1_max;
+  float rotor_max;
+  uint16_t espnow_loss_sec;
+  uint16_t mqtt_loss_sec;
+  int8_t rssi_min;
+};
+
+const int HISTORY_SIZE = 36; // 36 samples x 5 minutes = 3 hours
+HistorySample historyBuffer[HISTORY_SIZE];
+int historyCount = 0;
+int historyHead = 0;
+
+static float bucket_temp_0_max = NAN;
+static float bucket_hum_0_max = NAN;
+static float bucket_temp_1_max = NAN;
+static float bucket_hum_1_max = NAN;
+static float bucket_lux_0_max = 0.0f;
+static float bucket_lux_1_max = 0.0f;
+static float bucket_rotor_max = 0.0f;
+static uint16_t bucket_espnow_loss_sec = 0;
+static uint16_t bucket_mqtt_loss_sec = 0;
+static int8_t bucket_rssi_min = 0;
+static unsigned long lastHistoryBucketTime = 0;
+
+// Main Loop Benchmark Counter
+static unsigned long loopCounter = 0;
+static uint32_t loopsPerSecond = 0;
+static unsigned long lastLoopBenchTime = 0;
+
+void updateHistoryAccumulators1s();
 
 // NTP & Weekly Watchdog Reset Helpers
 static bool ntpInitialized = false;
@@ -1008,6 +1048,75 @@ struct LightSensor {
 LightSensor lightSensors[2];
 int detectedLightSensors = 0;
 
+void updateHistoryAccumulators1s() {
+  if (tempSensors[0].active && !isnan(tempSensors[0].temperature)) {
+    if (isnan(bucket_temp_0_max) || tempSensors[0].temperature > bucket_temp_0_max)
+      bucket_temp_0_max = tempSensors[0].temperature;
+    if (isnan(bucket_hum_0_max) || tempSensors[0].humidity > bucket_hum_0_max)
+      bucket_hum_0_max = tempSensors[0].humidity;
+  }
+  if (tempSensors[1].active && !isnan(tempSensors[1].temperature)) {
+    if (isnan(bucket_temp_1_max) || tempSensors[1].temperature > bucket_temp_1_max)
+      bucket_temp_1_max = tempSensors[1].temperature;
+    if (isnan(bucket_hum_1_max) || tempSensors[1].humidity > bucket_hum_1_max)
+      bucket_hum_1_max = tempSensors[1].humidity;
+  }
+  if (lightSensors[0].active && !isnan(lightSensors[0].lux)) {
+    if (lightSensors[0].lux > bucket_lux_0_max)
+      bucket_lux_0_max = lightSensors[0].lux;
+  }
+  if (lightSensors[1].active && !isnan(lightSensors[1].lux)) {
+    if (lightSensors[1].lux > bucket_lux_1_max)
+      bucket_lux_1_max = lightSensors[1].lux;
+  }
+  if (rotorPosition > bucket_rotor_max)
+    bucket_rotor_max = rotorPosition;
+
+  if (sysConfig.espnow_role > 0 &&
+      (lastEspNowRxTime == 0 || (millis() - lastEspNowRxTime > 3000))) {
+    bucket_espnow_loss_sec++;
+  }
+  if (strlen(sysConfig.mqtt_server) > 0 && !mqttClient.connected()) {
+    bucket_mqtt_loss_sec++;
+  }
+  int currentRssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : -100;
+  if (bucket_rssi_min == 0 || currentRssi < bucket_rssi_min) {
+    bucket_rssi_min = (int8_t)currentRssi;
+  }
+
+  if (millis() - lastHistoryBucketTime >= 300000UL || lastHistoryBucketTime == 0) {
+    lastHistoryBucketTime = millis();
+
+    HistorySample sample;
+    sample.temp_0_max = bucket_temp_0_max;
+    sample.hum_0_max = bucket_hum_0_max;
+    sample.temp_1_max = bucket_temp_1_max;
+    sample.hum_1_max = bucket_hum_1_max;
+    sample.lux_0_max = bucket_lux_0_max;
+    sample.lux_1_max = bucket_lux_1_max;
+    sample.rotor_max = bucket_rotor_max;
+    sample.espnow_loss_sec = bucket_espnow_loss_sec;
+    sample.mqtt_loss_sec = bucket_mqtt_loss_sec;
+    sample.rssi_min = bucket_rssi_min;
+
+    historyBuffer[historyHead] = sample;
+    historyHead = (historyHead + 1) % HISTORY_SIZE;
+    if (historyCount < HISTORY_SIZE)
+      historyCount++;
+
+    bucket_temp_0_max = NAN;
+    bucket_hum_0_max = NAN;
+    bucket_temp_1_max = NAN;
+    bucket_hum_1_max = NAN;
+    bucket_lux_0_max = 0.0f;
+    bucket_lux_1_max = 0.0f;
+    bucket_rotor_max = 0.0f;
+    bucket_espnow_loss_sec = 0;
+    bucket_mqtt_loss_sec = 0;
+    bucket_rssi_min = 0;
+  }
+}
+
 // =====================================================================
 // HELPER CALCULATIONS
 // =====================================================================
@@ -1553,6 +1662,37 @@ void handleGetData() {
   doc["wifi_mac"] = WiFi.macAddress();
   doc["wifi_channel"] = WiFi.status() == WL_CONNECTED ? WiFi.channel() : 1;
   doc["watchdog_reset_countdown"] = getWatchdogResetCountdown();
+  doc["fw_version"] = "1." + String(localFirmwareVersion);
+  doc["loops_per_sec"] = loopsPerSecond;
+
+  String jsonResponse;
+  serializeJson(doc, jsonResponse);
+  server.send(200, "application/json", jsonResponse);
+}
+
+void handleGetHistory() {
+  JsonDocument doc;
+  JsonArray samples = doc["history"].to<JsonArray>();
+
+  int startIdx = (historyCount < HISTORY_SIZE) ? 0 : historyHead;
+  for (int i = 0; i < historyCount; i++) {
+    int idx = (startIdx + i) % HISTORY_SIZE;
+    JsonObject s = samples.add<JsonObject>();
+    s["t0"] = isnan(historyBuffer[idx].temp_0_max) ? JsonVariant()
+                                                   : historyBuffer[idx].temp_0_max;
+    s["h0"] = isnan(historyBuffer[idx].hum_0_max) ? JsonVariant()
+                                                  : historyBuffer[idx].hum_0_max;
+    s["t1"] = isnan(historyBuffer[idx].temp_1_max) ? JsonVariant()
+                                                   : historyBuffer[idx].temp_1_max;
+    s["h1"] = isnan(historyBuffer[idx].hum_1_max) ? JsonVariant()
+                                                  : historyBuffer[idx].hum_1_max;
+    s["l0"] = historyBuffer[idx].lux_0_max;
+    s["l1"] = historyBuffer[idx].lux_1_max;
+    s["r"] = historyBuffer[idx].rotor_max;
+    s["el"] = historyBuffer[idx].espnow_loss_sec;
+    s["ml"] = historyBuffer[idx].mqtt_loss_sec;
+    s["rssi"] = historyBuffer[idx].rssi_min;
+  }
 
   String jsonResponse;
   serializeJson(doc, jsonResponse);
@@ -1700,6 +1840,10 @@ void handlePortalRoot() {
           transform: var(--ts, translateX(-100%));
           transition: transform 0.2s ease-out;
         }
+        details.hist-toggle { margin-top: 12px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 6px; }
+        details.hist-toggle summary { font-size: 11px; color: #94a3b8; cursor: pointer; user-select: none; font-weight: 600; outline: none; margin-bottom: 4px; }
+        .spark-box { position: relative; width: 100%; height: 50px; background: rgba(15,23,42,0.6); border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); overflow: hidden; cursor: pointer; }
+        .spark-box canvas { width: 100%; height: 50px; display: block; }
     </style>
 </head>
 <body>
@@ -1712,6 +1856,12 @@ void handlePortalRoot() {
                 <div class="value-row"><span>Feuchtigkeit:</span><span class="val" id="hum-0">--</span></div>
                 <div class="value-row" id="dp-row-0"><span>Taupunkt:</span><span class="val" id="dp-0">--</span></div>
                 <div class="value-row" id="press-row-0"><span>Luftdruck:</span><span class="val" id="press-0">--</span></div>
+                <details open class="hist-toggle" id="details-temp-0" ontoggle="renderAllCharts()">
+                    <summary>3h Verlauf (Temp / Feuchte)</summary>
+                    <div class="spark-box" onclick="openChartZoom('temp_0', 'Sensor 1 Verlauf')">
+                        <canvas id="cv-sensor-0"></canvas>
+                    </div>
+                </details>
             </div>
             <div class="card" id="sensor-card-1" style="display:none;">
                 <div class="card-title" id="sensor-title-1">Sensor 2</div>
@@ -1719,18 +1869,36 @@ void handlePortalRoot() {
                 <div class="value-row"><span>Feuchtigkeit:</span><span class="val" id="hum-1">--</span></div>
                 <div class="value-row" id="dp-row-1"><span>Taupunkt:</span><span class="val" id="dp-1">--</span></div>
                 <div class="value-row" id="press-row-1"><span>Luftdruck:</span><span class="val" id="press-1">--</span></div>
+                <details open class="hist-toggle" id="details-temp-1" ontoggle="renderAllCharts()">
+                    <summary>3h Verlauf (Temp / Feuchte)</summary>
+                    <div class="spark-box" onclick="openChartZoom('temp_1', 'Sensor 2 Verlauf')">
+                        <canvas id="cv-sensor-1"></canvas>
+                    </div>
+                </details>
             </div>
             <div class="card" id="light-card-0" style="display:none;">
                 <div class="card-title" id="light-title-0">TSL2561 (1)</div>
                 <div class="value-row"><span>Helligkeit:</span><span class="val" id="lux-val-0">--</span></div>
                 <div class="value-row"><span>Breitband:</span><span class="val" id="broadband-val-0">--</span></div>
                 <div class="value-row"><span>Infrarot:</span><span class="val" id="ir-val-0">--</span></div>
+                <details open class="hist-toggle" id="details-lux-0" ontoggle="renderAllCharts()">
+                    <summary>3h Verlauf (Helligkeit)</summary>
+                    <div class="spark-box" onclick="openChartZoom('lux_0', 'TSL2561 (1) Helligkeit')">
+                        <canvas id="cv-lux-0"></canvas>
+                    </div>
+                </details>
             </div>
             <div class="card" id="light-card-1" style="display:none;">
                 <div class="card-title" id="light-title-1">TSL2561 (2)</div>
                 <div class="value-row"><span>Helligkeit:</span><span class="val" id="lux-val-1">--</span></div>
                 <div class="value-row"><span>Breitband:</span><span class="val" id="broadband-val-1">--</span></div>
                 <div class="value-row"><span>Infrarot:</span><span class="val" id="ir-val-1">--</span></div>
+                <details open class="hist-toggle" id="details-lux-1" ontoggle="renderAllCharts()">
+                    <summary>3h Verlauf (Helligkeit)</summary>
+                    <div class="spark-box" onclick="openChartZoom('lux_1', 'TSL2561 (2) Helligkeit')">
+                        <canvas id="cv-lux-1"></canvas>
+                    </div>
+                </details>
             </div>
             <div class="card">
                 <div class="card-title">Potentiometer</div>
@@ -1744,18 +1912,36 @@ void handlePortalRoot() {
                 <div class="moon-container">
                     <div id="luna" class="moon"></div>
                 </div>
+                <details open class="hist-toggle" id="details-rotor" ontoggle="renderAllCharts()">
+                    <summary>3h Verlauf (Rotor Öffnung)</summary>
+                    <div class="spark-box" onclick="openChartZoom('rotor', 'Rotor Stellung Verlauf')">
+                        <canvas id="cv-rotor"></canvas>
+                    </div>
+                </details>
             </div>
             <div class="card" id="espnow-card" style="display:none;">
                 <div class="card-title">ESPNOW</div>
                 <div class="value-row"><span>Rolle:</span><span class="val" id="espnow-val-role" style="font-weight: bold; text-transform: uppercase;">--</span></div>
                 <div class="value-row"><span>Verbindung:</span><span class="val" id="espnow-val-conn">--</span></div>
                 <div class="value-row"><span>Protokoll:</span><span class="val" id="espnow-val-pv">--</span></div>
+                <details open class="hist-toggle" id="details-espnow" ontoggle="renderAllCharts()">
+                    <summary>3h Verbindungsausfälle</summary>
+                    <div class="spark-box" onclick="openChartZoom('espnow', 'ESP-NOW Link Loss Verlauf')">
+                        <canvas id="cv-espnow"></canvas>
+                    </div>
+                </details>
             </div>
             <div class="card" id="mqtt-card" style="display:none;">
                 <div class="card-title" id="mqtt-title">MQTT Dashboard</div>
                 <div class="value-row"><span>Broker:</span><span class="val" id="mqtt-broker">--</span></div>
                 <div class="value-row"><span>Status:</span><span class="val" id="mqtt-status">--</span></div>
                 <div class="value-row"><span style="flex-shrink: 0; margin-right: 10px;">Topic:</span><span class="val" id="mqtt-topic" style="font-size:11px; text-align: right; word-break:break-all;">--</span></div>
+                <details open class="hist-toggle" id="details-mqtt" ontoggle="renderAllCharts()">
+                    <summary>3h Broker Ausfälle</summary>
+                    <div class="spark-box" onclick="openChartZoom('mqtt', 'MQTT Link Loss Verlauf')">
+                        <canvas id="cv-mqtt"></canvas>
+                    </div>
+                </details>
             </div>
         </div>
         <div class="card">
@@ -1772,13 +1958,31 @@ void handlePortalRoot() {
                 <span class="val" id="sys-rssi">--</span>
             </div>
             <div class="value-row"><span>Watchdog reset weekly:</span><span class="val" id="sys-wd-reset" style="font-family: monospace;">--</span></div>
+            <details open class="hist-toggle" id="details-rssi" ontoggle="renderAllCharts()">
+                <summary>3h Signalstärke Verlauf (RSSI)</summary>
+                <div class="spark-box" onclick="openChartZoom('rssi', 'WLAN Signalstärke Verlauf')">
+                    <canvas id="cv-rssi"></canvas>
+                </div>
+            </details>
         </div>
         <div class="footer" style="display: flex; justify-content: space-between; align-items: center; margin-top: 25px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.05);">
-            <span>IDRY26 Live Monitor</span>
+            <span id="footer-text">IDRY26 Live Monitor v)rawhtml" + String("1.") + String(localFirmwareVersion) + R"rawhtml( - (bench: <span id="footer-bench" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> loops/s)</span>
             <a href="/settings" style="color: #818cf8; text-decoration: none; display: inline-flex; align-items: center; gap: 5px; font-weight: 600; padding: 6px 12px; background: rgba(129, 140, 248, 0.1); border-radius: 8px; border: 1px solid rgba(129, 140, 248, 0.2); transition: all 0.2s;">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
                 Einstellungen
             </a>
+        </div>
+    </div>
+
+    <!-- Fullscreen Interactive Zoom Modal -->
+    <div id="chart-modal" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(15,23,42,0.88); backdrop-filter:blur(10px); z-index:999; align-items:center; justify-content:center; padding:20px;">
+        <div style="background:#1e293b; border:1px solid rgba(255,255,255,0.1); border-radius:16px; padding:24px; max-width:700px; width:100%; box-shadow:0 25px 50px -12px rgba(0,0,0,0.7);">
+            <h2 id="modal-title" style="font-size:18px; color:#818cf8; margin-bottom:15px; text-align:center;">Verlauf (3h Zoom)</h2>
+            <div style="width:100%; overflow-x:auto; background:#0f172a; border-radius:8px; border:1px solid rgba(255,255,255,0.05); padding:10px;">
+                <canvas id="modal-canvas" width="600" height="200" style="display:block; width:100%; height:200px;"></canvas>
+            </div>
+            <div id="modal-tooltip" style="font-family:monospace; font-size:13px; color:#38bdf8; margin-top:12px; text-align:center; min-height:18px;">Hover über die Grafik für Details...</div>
+            <button onclick="closeChartModal()" style="margin-top:18px; width:100%; padding:12px; border-radius:8px; border:none; background:#3b82f6; color:white; font-weight:bold; cursor:pointer; font-size:14px;">Schließen</button>
         </div>
     </div>
     <script>
@@ -1950,9 +2154,12 @@ void handlePortalRoot() {
                             statusEl.innerText = "try to connect";
                             statusEl.style.color = "#f87171"; // red
                         }
-                        document.getElementById('mqtt-topic').innerText = data.mqtt_topic;
-                    } else {
                         mqttCard.style.display = 'none';
+                    }
+
+                    const benchEl = document.getElementById('footer-bench');
+                    if (benchEl) {
+                        benchEl.innerText = data.loops_per_sec || 0;
                     }
                 })
                 .catch(err => {
@@ -1974,8 +2181,222 @@ void handlePortalRoot() {
                     if (luna) luna.style.backgroundColor = '#f87171';
                 });
         }
+
+        let historyData = [];
+
+        function fetchHistory() {
+            fetchWithTimeout('/api/history', { timeout: 2000 })
+                .then(r => r.json())
+                .then(data => {
+                    if (data && data.history) {
+                        historyData = data.history;
+                        renderAllCharts();
+                    }
+                }).catch(e => console.error("History fetch error", e));
+        }
+
+        function renderAllCharts() {
+            renderCardChart('details-temp-0', 'cv-sensor-0', 'temp', 0);
+            renderCardChart('details-temp-1', 'cv-sensor-1', 'temp', 1);
+            renderCardChart('details-lux-0', 'cv-lux-0', 'lux', 0);
+            renderCardChart('details-lux-1', 'cv-lux-1', 'lux', 1);
+            renderCardChart('details-rotor', 'cv-rotor', 'rotor');
+            renderCardChart('details-espnow', 'cv-espnow', 'espnow');
+            renderCardChart('details-mqtt', 'cv-mqtt', 'mqtt');
+            renderCardChart('details-rssi', 'cv-rssi', 'rssi');
+        }
+
+        function renderCardChart(detailsId, canvasId, type, index) {
+            const details = document.getElementById(detailsId);
+            if (details && !details.open) return;
+
+            const canvas = document.getElementById(canvasId);
+            if (!canvas) return;
+
+            const ctx = canvas.getContext('2d');
+            const dpr = window.devicePixelRatio || 1;
+            const w = canvas.width = canvas.offsetWidth * dpr;
+            const h = canvas.height = canvas.offsetHeight * dpr;
+
+            ctx.clearRect(0, 0, w, h);
+            if (!historyData || historyData.length === 0) return;
+
+            let minY = 0, maxY = 100, midY = 50;
+            let labelMax = "100", labelMid = "50", labelMin = "0";
+            let greenLineVal = null;
+
+            if (type === 'temp') {
+                maxY = 50; minY = 0; midY = 25;
+                labelMax = "50"; labelMid = "25"; labelMin = "0";
+                greenLineVal = 25;
+            } else if (type === 'hum') {
+                maxY = 100; minY = 0; midY = 50;
+                labelMax = "100"; labelMid = "50"; labelMin = "0";
+                greenLineVal = 50;
+            } else if (type === 'lux') {
+                maxY = 1000; minY = 0; midY = 500;
+                labelMax = "1000"; labelMid = "500"; labelMin = "0";
+            } else if (type === 'rotor' || type === 'rssi') {
+                maxY = 100; minY = 0; midY = 50;
+                labelMax = "100"; labelMid = "50"; labelMin = "0";
+            } else if (type === 'espnow' || type === 'mqtt') {
+                maxY = 49; minY = 0; midY = 25;
+                labelMax = "49"; labelMid = "25"; labelMin = "0";
+            }
+
+            ctx.fillStyle = '#64748b';
+            ctx.font = `${10 * dpr}px monospace`;
+            ctx.textBaseline = 'top';
+            ctx.fillText(labelMax, 4 * dpr, 2 * dpr);
+            ctx.textBaseline = 'middle';
+            ctx.fillText(labelMid, 4 * dpr, h / 2);
+            ctx.textBaseline = 'bottom';
+            ctx.fillText(labelMin, 4 * dpr, h - 8 * dpr);
+
+            const marginL = 32 * dpr;
+            const chartW = w - marginL;
+            const chartH = h - 8 * dpr;
+
+            const count = 36;
+            const candleW = chartW / count;
+
+            for (let i = 0; i < historyData.length; i++) {
+                let val = 0;
+                const d = historyData[i];
+                if (type === 'temp') val = (index === 0 ? d.t0 : d.t1);
+                else if (type === 'hum') val = (index === 0 ? d.h0 : d.h1);
+                else if (type === 'lux') val = (index === 0 ? d.l0 : d.l1);
+                else if (type === 'rotor') val = d.r;
+                else if (type === 'espnow') val = d.el;
+                else if (type === 'mqtt') val = d.ml;
+                else if (type === 'rssi') {
+                    let r = d.rssi || -100;
+                    val = Math.round((r + 100) * 10 / 7);
+                }
+
+                if (val === null || val === undefined || isNaN(val)) continue;
+                if (val < minY) val = minY;
+                if (val > maxY) val = maxY;
+
+                const valH = ((val - minY) / (maxY - minY)) * chartH;
+                const x = marginL + i * candleW;
+                const y = chartH - valH;
+
+                ctx.fillStyle = (type === 'espnow' || type === 'mqtt') ? '#f87171' : '#38bdf8';
+                ctx.fillRect(x + 1, y, Math.max(1, candleW - 2), valH);
+            }
+
+            if (greenLineVal !== null) {
+                const greenY = chartH - ((greenLineVal - minY) / (maxY - minY)) * chartH;
+                ctx.strokeStyle = '#22c55e';
+                ctx.lineWidth = 1.5 * dpr;
+                ctx.setLineDash([4 * dpr, 4 * dpr]);
+                ctx.beginPath();
+                ctx.moveTo(marginL, greenY);
+                ctx.lineTo(w, greenY);
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
+
+            const baseY = chartH + 1;
+            ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+            ctx.lineWidth = 1 * dpr;
+            ctx.beginPath();
+            ctx.moveTo(marginL, baseY);
+            ctx.lineTo(w, baseY);
+            ctx.stroke();
+
+            for (let i = 0; i <= count; i += 6) {
+                const tx = marginL + i * candleW;
+                const tickH = (i % 12 === 0) ? 4 * dpr : 2 * dpr;
+                ctx.lineWidth = (i % 12 === 0) ? 2 * dpr : 1 * dpr;
+                ctx.beginPath();
+                ctx.moveTo(tx, baseY);
+                ctx.lineTo(tx, baseY + tickH);
+                ctx.stroke();
+            }
+        }
+
+        let currentZoomType = '', currentZoomTitle = '';
+        function openChartZoom(type, title) {
+            currentZoomType = type;
+            currentZoomTitle = title;
+            document.getElementById('modal-title').innerText = title + " (3h Zoom)";
+            document.getElementById('chart-modal').style.display = 'flex';
+            renderModalZoom();
+        }
+
+        function closeChartModal() {
+            document.getElementById('chart-modal').style.display = 'none';
+        }
+
+        function renderModalZoom() {
+            const canvas = document.getElementById('modal-canvas');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            const dpr = window.devicePixelRatio || 1;
+            const w = canvas.width = canvas.offsetWidth * dpr;
+            const h = canvas.height = canvas.offsetHeight * dpr;
+
+            ctx.clearRect(0, 0, w, h);
+            if (!historyData || historyData.length === 0) return;
+
+            let type = currentZoomType, index = 0;
+            if (type.startsWith('temp_')) { index = parseInt(type.split('_')[1]); type = 'temp'; }
+            if (type.startsWith('lux_')) { index = parseInt(type.split('_')[1]); type = 'lux'; }
+
+            let minY = 0, maxY = 100, labelMax = "100", labelMid = "50", labelMin = "0", greenLineVal = null;
+            if (type === 'temp') { maxY = 50; labelMax = "50"; labelMid = "25"; labelMin = "0"; greenLineVal = 25; }
+            else if (type === 'lux') { maxY = 1000; labelMax = "1000"; labelMid = "500"; labelMin = "0"; }
+            else if (type === 'espnow' || type === 'mqtt') { maxY = 49; labelMax = "49"; labelMid = "25"; labelMin = "0"; }
+
+            ctx.fillStyle = '#94a3b8';
+            ctx.font = `${12 * dpr}px monospace`;
+            ctx.textBaseline = 'top'; ctx.fillText(labelMax, 5 * dpr, 5 * dpr);
+            ctx.textBaseline = 'middle'; ctx.fillText(labelMid, 5 * dpr, h / 2);
+            ctx.textBaseline = 'bottom'; ctx.fillText(labelMin, 5 * dpr, h - 10 * dpr);
+
+            const marginL = 45 * dpr;
+            const chartW = w - marginL;
+            const chartH = h - 15 * dpr;
+            const count = 36;
+            const candleW = chartW / count;
+
+            for (let i = 0; i < historyData.length; i++) {
+                let val = 0;
+                const d = historyData[i];
+                if (type === 'temp') val = (index === 0 ? d.t0 : d.t1);
+                else if (type === 'hum') val = (index === 0 ? d.h0 : d.h1);
+                else if (type === 'lux') val = (index === 0 ? d.l0 : d.l1);
+                else if (type === 'rotor') val = d.r;
+                else if (type === 'espnow') val = d.el;
+                else if (type === 'mqtt') val = d.ml;
+                else if (type === 'rssi') { let r = d.rssi || -100; val = Math.round((r + 100) * 10 / 7); }
+
+                if (val === null || val === undefined || isNaN(val)) continue;
+                if (val < minY) val = minY; if (val > maxY) val = maxY;
+                const valH = ((val - minY) / (maxY - minY)) * chartH;
+                const x = marginL + i * candleW;
+                const y = chartH - valH;
+
+                ctx.fillStyle = (type === 'espnow' || type === 'mqtt') ? '#ef4444' : '#38bdf8';
+                ctx.fillRect(x + 2, y, Math.max(2, candleW - 4), valH);
+            }
+
+            if (greenLineVal !== null) {
+                const greenY = chartH - ((greenLineVal - minY) / (maxY - minY)) * chartH;
+                ctx.strokeStyle = '#22c55e';
+                ctx.lineWidth = 2 * dpr;
+                ctx.setLineDash([6 * dpr, 6 * dpr]);
+                ctx.beginPath(); ctx.moveTo(marginL, greenY); ctx.lineTo(w, greenY); ctx.stroke();
+                ctx.setLineDash([]);
+            }
+        }
+
         setInterval(updateData, 1000);
+        setInterval(fetchHistory, 15000);
         updateData();
+        fetchHistory();
     </script>
 </body>
 </html>
@@ -2599,7 +3020,7 @@ void handleSettingsPage() {
             </form>
         </div>
 
-        <div class="footer">IDRY26 Live Monitor</div>
+        <div class="footer" id="footer-text">IDRY26 Live Monitor v)rawhtml" + String("1.") + String(localFirmwareVersion) + R"rawhtml( - (bench: <span id="footer-bench-settings" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> loops/s)</div>
     </div>
 
     <script>
@@ -2844,6 +3265,10 @@ void handleSettingsPage() {
                     const settingsWdEl = document.getElementById('settings-wd-reset');
                     if (settingsWdEl) {
                         settingsWdEl.innerText = data.watchdog_reset_countdown || "--";
+                    }
+                    const settingsBenchEl = document.getElementById('footer-bench-settings');
+                    if (settingsBenchEl) {
+                        settingsBenchEl.innerText = data.loops_per_sec || 0;
                     }
                 }).catch(err => console.error(err));
         }
@@ -4360,6 +4785,13 @@ void setup() {
 }
 
 void loop() {
+  loopCounter++;
+  if (millis() - lastLoopBenchTime >= 1000) {
+    loopsPerSecond = loopCounter;
+    loopCounter = 0;
+    lastLoopBenchTime = millis();
+  }
+
   // =====================================================================
   // ESP-NOW PAIRING TICK
   // =====================================================================
