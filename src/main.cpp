@@ -22,7 +22,7 @@
 
 
 // Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 9;
+const int localFirmwareVersion = 10;
 
 // Sensor Libraries
 #include <Adafruit_BME280.h>
@@ -969,6 +969,7 @@ void handleAutoUpdate();
 void handleAutoUpdateApi();
 void handleUploadProgress();
 void handleUploadFinish();
+void publishMqttState();
 
 // =====================================================================
 // SENSOR CONFIGURATIONS
@@ -1011,6 +1012,13 @@ float calculateDewPoint(float temp, float hum) {
   const float c = 243.5f;
   float gamma = (b * temp) / (c + temp) + log(hum / 100.0f);
   return (c * gamma) / (b - gamma);
+}
+
+float calculateVPD(float temp, float hum) {
+  if (isnan(temp) || isnan(hum)) return NAN;
+  float svp = 0.61078f * exp((17.27f * temp) / (temp + 237.3f));
+  float avp = svp * (hum / 100.0f);
+  return svp - avp;
 }
 
 void scanI2C() {
@@ -4001,6 +4009,14 @@ void sendHADiscoveryConfig(const char *sensorName, const char *displayName,
 void registerHomeAssistantDevices() {
   Serial.println("[MQTT] Registering entities via HA Auto-Discovery...");
 
+  // Primary System & Calculated Entities (Always Available)
+  sendHADiscoveryConfig("rotor_pos", "Rotor Position", "%", "mdi:fan", "");
+  sendHADiscoveryConfig("servo_angle", "Servo Winkel", "°", "mdi:angle-acute", "");
+  sendHADiscoveryConfig("temperature", "Temperatur", "°C", "mdi:thermometer", "temperature");
+  sendHADiscoveryConfig("humidity", "Luftfeuchtigkeit", "%", "mdi:water-percent", "humidity");
+  sendHADiscoveryConfig("dewpoint", "Taupunkt", "°C", "mdi:thermometer-alert", "temperature");
+  sendHADiscoveryConfig("vpd", "VPD", "kPa", "mdi:gauge", "");
+
   // Register active temperature sensors dynamically
   for (int i = 0; i < 2; i++) {
     if (tempSensors[i].active) {
@@ -4050,6 +4066,92 @@ void registerHomeAssistantDevices() {
   sendHADiscoveryConfig("poti_b", "Poti B (Gain)", "%", "mdi:knob", "");
   sendHADiscoveryConfig("poti_c", "Poti C (Cal Offset)", "°", "mdi:knob", "");
   sendHADiscoveryConfig("linkquality", "Signalstärke", "lqi", "mdi:signal", "");
+  sendHADiscoveryConfig("rssi", "WLAN Signalstärke", "dBm", "mdi:wifi", "signal_strength");
+}
+
+void publishMqttState() {
+  if (!mqttClient.connected()) return;
+
+  JsonDocument doc;
+
+  doc["rotor_pos"] = (int)round(rotorPosition);
+  doc["servo_angle"] = (int)round(currentServoAngle);
+
+  // Extract primary temperature and humidity
+  float primaryTemp = NAN;
+  float primaryHum = NAN;
+  for (int i = 0; i < 2; i++) {
+    if (tempSensors[i].active && !isnan(tempSensors[i].temperature)) {
+      primaryTemp = tempSensors[i].temperature;
+      primaryHum = tempSensors[i].humidity;
+      break;
+    }
+  }
+
+  if (!isnan(primaryTemp)) {
+    doc["temperature"] = primaryTemp;
+    doc["humidity"] = primaryHum;
+    float dp = calculateDewPoint(primaryTemp, primaryHum);
+    doc["dewpoint"] = isnan(dp) ? JsonVariant() : dp;
+    float vpd = calculateVPD(primaryTemp, primaryHum);
+    doc["vpd"] = isnan(vpd) ? JsonVariant() : vpd;
+  }
+
+  for (int i = 0; i < 2; i++) {
+    if (tempSensors[i].active) {
+      String idStr = "sensor_" + String(i);
+      doc[idStr + "_temp"] = isnan(tempSensors[i].temperature)
+                                 ? JsonVariant()
+                                 : tempSensors[i].temperature;
+      doc[idStr + "_hum"] = isnan(tempSensors[i].humidity)
+                                ? JsonVariant()
+                                : tempSensors[i].humidity;
+      float dp = calculateDewPoint(tempSensors[i].temperature,
+                                   tempSensors[i].humidity);
+      doc[idStr + "_dewpoint"] = isnan(dp) ? JsonVariant() : dp;
+
+      if (tempSensors[i].type == TempSensor::TYPE_BME280) {
+        doc[idStr + "_press"] = isnan(tempSensors[i].pressure)
+                                    ? JsonVariant()
+                                    : tempSensors[i].pressure;
+      }
+    }
+  }
+
+  for (int i = 0; i < 2; i++) {
+    if (lightSensors[i].active) {
+      String idStr = "light_" + String(i);
+      doc[idStr + "_lux"] =
+          isnan(lightSensors[i].lux) ? JsonVariant() : lightSensors[i].lux;
+      doc[idStr + "_broadband"] = lightSensors[i].broadband;
+      doc[idStr + "_ir"] = lightSensors[i].ir;
+    }
+  }
+
+  doc["poti_a"] = potiAVal;
+  doc["poti_b"] = potiBVal;
+  doc["poti_c"] = potiCVal;
+  doc["servo_update_interval"] = sysConfig.servo_update_interval;
+  doc["espnow_role"] = sysConfig.espnow_role;
+  doc["espnow_last_seen_ms"] =
+      (sysConfig.espnow_role > 0 && strlen(sysConfig.espnow_peer_mac) > 0)
+          ? ((lastEspNowRxTime == 0) ? -1
+                                     : (long)(millis() - lastEspNowRxTime))
+          : -1;
+  doc["espnow_interval_ms"] =
+      (sysConfig.espnow_role > 0 && strlen(sysConfig.espnow_peer_mac) > 0)
+          ? avgEspNowIntervalMs
+          : 0;
+  doc["linkquality"] = (WiFi.status() == WL_CONNECTED)
+                           ? map(WiFi.RSSI(), -100, -30, 0, 255)
+                           : 0;
+  doc["rssi"] = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
+  doc["watchdog_reset_countdown"] = getWatchdogResetCountdown();
+
+  String statePayload;
+  serializeJson(doc, statePayload);
+  mqttClient.publish(stateTopic.c_str(), statePayload.c_str());
+  Serial.println("[MQTT] Published live sensor state data.");
 }
 
 // =====================================================================
@@ -4526,6 +4628,7 @@ void loop() {
       if (mqttConnected) {
         Serial.println("[MQTT] Broker Connected!");
         registerHomeAssistantDevices();
+        publishMqttState(); // Publish initial state telemetry immediately!
       } else {
         Serial.printf("[MQTT] Connection failed, rc=%d. Retrying in 10s.\n",
                       mqttClient.state());
@@ -4556,64 +4659,8 @@ void loop() {
     }
 
     // Publish to MQTT State based on configured interval (converted to seconds)
-    if (updateCount % (sysConfig.mqtt_report_interval * 60) == 0 &&
-        mqttClient.connected()) {
-      JsonDocument doc;
-
-      for (int i = 0; i < 2; i++) {
-        if (tempSensors[i].active) {
-          String idStr = "sensor_" + String(i);
-          doc[idStr + "_temp"] = isnan(tempSensors[i].temperature)
-                                     ? JsonVariant()
-                                     : tempSensors[i].temperature;
-          doc[idStr + "_hum"] = isnan(tempSensors[i].humidity)
-                                    ? JsonVariant()
-                                    : tempSensors[i].humidity;
-          float dp = calculateDewPoint(tempSensors[i].temperature,
-                                       tempSensors[i].humidity);
-          doc[idStr + "_dewpoint"] = isnan(dp) ? JsonVariant() : dp;
-
-          if (tempSensors[i].type == TempSensor::TYPE_BME280) {
-            doc[idStr + "_press"] = isnan(tempSensors[i].pressure)
-                                        ? JsonVariant()
-                                        : tempSensors[i].pressure;
-          }
-        }
-      }
-
-      for (int i = 0; i < 2; i++) {
-        if (lightSensors[i].active) {
-          String idStr = "light_" + String(i);
-          doc[idStr + "_lux"] =
-              isnan(lightSensors[i].lux) ? JsonVariant() : lightSensors[i].lux;
-          doc[idStr + "_broadband"] = lightSensors[i].broadband;
-          doc[idStr + "_ir"] = lightSensors[i].ir;
-        }
-      }
-
-      doc["poti_a"] = potiAVal;
-      doc["poti_b"] = potiBVal;
-      doc["poti_c"] = potiCVal;
-      doc["servo_update_interval"] = sysConfig.servo_update_interval;
-      doc["espnow_role"] = sysConfig.espnow_role;
-      doc["espnow_last_seen_ms"] =
-          (sysConfig.espnow_role > 0 && strlen(sysConfig.espnow_peer_mac) > 0)
-              ? ((lastEspNowRxTime == 0) ? -1
-                                         : (long)(millis() - lastEspNowRxTime))
-              : -1;
-      doc["espnow_interval_ms"] =
-          (sysConfig.espnow_role > 0 && strlen(sysConfig.espnow_peer_mac) > 0)
-              ? avgEspNowIntervalMs
-              : 0;
-      doc["linkquality"] = (WiFi.status() == WL_CONNECTED)
-                               ? map(WiFi.RSSI(), -100, -30, 0, 255)
-                               : 0;
-      doc["watchdog_reset_countdown"] = getWatchdogResetCountdown();
-
-      String statePayload;
-      serializeJson(doc, statePayload);
-      mqttClient.publish(stateTopic.c_str(), statePayload.c_str());
-      Serial.println("[MQTT] Published live sensor state data.");
+    if (updateCount % (sysConfig.mqtt_report_interval * 60) == 0) {
+      publishMqttState();
     }
 
     if (isHeadless) {
