@@ -1,6 +1,13 @@
 # Project Workspace Customization Rules
 
-This workspace contains customized configuration rules for the YD-ESP32-S3, Waveshare 3.52" e-Paper display, ILI9341 TFT display, I2C sensor interfaces, analog potentiometers, LEDC servo motor control, ESP-NOW dual-mesh communication, and Home Assistant MQTT auto-discovery.
+This workspace contains customized configuration rules for the YD-ESP32-S3, Waveshare 3.52" e-Paper display, ILI9341 TFT display, I2C sensor interfaces, analog potentiometers, LEDC servo motor control, ESP-NOW dual-mesh communication, Home Assistant MQTT auto-discovery, live OTA terminal, and ESP32 header validation.
+
+---
+
+## Core Purpose & System Philosophy (Hermetic Drying Valve)
+* **Hermetic Sealing vs. Over-Drying:** In a harvest drying tent or curing box, standard internal fans only circulate air but cannot block external climate exchange. Once target humidity/climate is reached, iDry-26 completely closes the mechanical servo shutter valve—hermetically sealing intake and exhaust vents like a sealed storage container or a bucket with a lid (Eimer mit Deckel). This prevents critical over-drying (Übertrocknung).
+* **Master-Slave Hermetic Combo:** Two iDry-26 units (Master on intake, Slave on exhaust) communicate via ESP-NOW to seal the drying tent synchronously on both sides. (Works standalone with a single unit as well).
+* **1-Knob Simple Operation:** Controlled primarily via one main potentiometer (Poti A) to set target humidity (48–72%), featuring explicit "Rigoros ZU" ($\le 49\%$) and "Rigoros AUF" ($\ge 71\%$) boundary modes.
 
 ---
 
@@ -44,7 +51,7 @@ Do not change SPI, I2C, ADC, or actuator pin assignments:
 
 ## ESP-NOW Master/Slave Mesh & Fail-Safe Protection
 * **Protocol Versioning:** Increment `localProtocolVersion` whenever `EspNowMessage` struct or command payload changes. Web UI alerts user on version mismatch.
-* **Fast-Track Channel Pairing:** Master broadcasts pairing beacons on Wi-Fi channel; Slave hops channels 1–13 every 1.2s to establish peer MAC and 128-bit CCMP LMK hardware encryption.
+* **Fast-Track Channel Pairing:** Master broadcasts pairing beacons on Wi-Fi channel; Slave hops channels 1–13 every 1.2s to establish peer MAC and 128-bit CCMP LMK hardware encryption. Case-insensitive MAC comparison (`strcasecmp`) guarantees 100% reliable peer validation.
 * **Aggressive Reconnection (>20s):** On Slave devices, if no packet is received for >20 seconds, re-initialize ESP-NOW stack (`initEspNow()`) every 15 seconds without rebooting the MCU (preventing unwanted servo movements).
 * **2-Stage Fail-Safe Mode (>60s Connection Loss):**
   - `espnow_failsafe_mode = 0` (Default) or no local sensor: Force rotor position to 50% (Safety Open) so ventilation is never choked. UI displays 3-line warning hint when no sensor is detected.
@@ -76,8 +83,15 @@ Do not change SPI, I2C, ADC, or actuator pin assignments:
 
 ---
 
-## OTA Firmware Updates & Custom 16MB Partitioning
+## Home Assistant MQTT Auto-Discovery & PubSubClient Buffer
+* **1-Click Auto-Discovery:** Automatically publishes discovery payloads for all entities (Rotor Position, Servo Angle, Temperature, Humidity, Dewpoint, VPD, RSSI, Potis A/B/C, Linkquality, BME280, SHT31, TSL2561 Lux/IR/Broadband).
+* **2048-Byte Buffer:** `mqttClient.setBufferSize(2048)` is enforced to prevent large JSON discovery and telemetry payloads from being dropped by PubSubClient's default 256-byte limit.
+* **Instant State Telemetry:** State telemetry is published immediately upon MQTT broker connection and updated periodically.
+
+---
+
+## OTA Firmware Updates, Live Terminal & 16MB Partitioning
 * **Partition Table (`partitions.csv`):** 16MB dual OTA layout (`app0` 6.5MB at 0x10000, `app1` 6.5MB at 0x690000, `spiffs`/`littlefs` 2.87MB at 0xD10000). Dual OTA banks allow safe background bank switching and automatic fallback.
-* **Firmware Versioning (`localFirmwareVersion`):** Hardcoded integer version in source code (`const int localFirmwareVersion = 6;`).
-* **GitHub Online Auto-Update:** Checks GitHub `version.txt` via `HTTPClient` with SSL insecure mode (`WiFiClientSecure::setInsecure()`). If `onlineVersion > localFirmwareVersion`, displays green **"🚀 Automatisch Online Updaten"** button in `/firmware` Web UI. Downloads and flashes `firmware.bin` directly via `httpUpdate.update()`.
-* **Manual Web OTA Upload:** `/firmware/upload` endpoint handles multipart `.bin` file stream using `Update.write()` and reboots upon completion with iDry reboot notice.
+* **1-Click GitHub Online OTA:** Checks `version.txt` on GitHub. Clicking **"🚀 Automatisch Online Updaten"** opens a live progress terminal log UI showing step-by-step connection, header verification, OTA flash percentage, and reboot notice.
+* **ESP32 Header Validation (Magic Byte `0xE9`):** Both Online OTA and Manual Upload verify byte 0 for ESP32 magic byte `0xE9` and minimum file size (>100KB) to prevent flashing corrupt or incorrect files.
+

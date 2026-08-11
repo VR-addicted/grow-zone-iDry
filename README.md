@@ -4,11 +4,23 @@
   <img src="https://img.shields.io/badge/PlatformIO-Core-orange.svg" alt="PlatformIO">
   <img src="https://img.shields.io/badge/Board-YD--ESP32--S3-blue.svg" alt="ESP32-S3">
   <img src="https://img.shields.io/badge/ESP--NOW-Encrypted%20Mesh-red.svg" alt="ESP-NOW">
-  <img src="https://img.shields.io/badge/Home%20Assistant-MQTT%20Discovery-03a9f4.svg" alt="Home Assistant">
+  <img src="https://img.shields.io/badge/Home%20Assistant-MQTT%20Auto%20Discovery-03a9f4.svg" alt="Home Assistant">
+  <img src="https://img.shields.io/badge/OTA-1--Click%20GitHub%20Update-green.svg" alt="OTA Update">
   <img src="https://img.shields.io/badge/Display-e--Paper%20%2F%20TFT%20%2F%20Headless-green.svg" alt="Display">
 </p>
 
-**iDry-26** ist eine hochentwickelte, ausfallsichere IoT-Klima- und Lüftungsklappensteuerung auf Basis des **YD-ESP32-S3**. Das System regelt Lüftungsrohre über Servo-Blendenverschlüsse vollautomatisch, schützt Erntegut oder Pflanzen vor Feuchtigkeitsinjektion (Thermodynamischer Feuchteschutz), kommuniziert verschlüsselt über **ESP-NOW Master/Slave-Kopplung**, bietet nahtlose **Home Assistant Integration** und unterstützt flexible Hardware-Ausbaustufen von *Headless* bis *Vollausbau*.
+**iDry-26** ist eine hochentwickelte, ausfallsichere IoT-Klima- und Lüftungsklappensteuerung auf Basis des **YD-ESP32-S3**. Das System regelt Lüftungsrohre über Servo-Blendenverschlüsse vollautomatisch, schützt Erntegut und Kräuter vor Übertrocknung sowie Feuchtigkeitsinjektion (Thermodynamischer Feuchteschutz), kommuniziert verschlüsselt über **ESP-NOW Master/Slave-Kopplung**, bietet nahtlose **1-Klick Home Assistant Auto-Discovery** und unterstützt flexible Hardware-Ausbaustufen von *Headless* bis *Vollausbau*.
+
+---
+
+## 🎯 Der tiefere Sinn: Hermetischer Verschluss gegen Übertrocknung
+
+Im Gegensatz zu gewöhnlichen Umluftventilatoren im Trockenzelt (die die Luft nur intern umwälzen, aber keinen Verschluss zur Außenwelt darstellen) ist **iDry-26 ein echtes mechanisches Ventil**:
+
+* **Wie ein Eimer mit Deckel (Storage Container):** Sobald der eingestellte Feuchte-Wunschwert im Zelt erreicht ist, schließt iDry-26 die Zu- und Abluftlöcher **komplett hermetisch**. 
+* **Schutz vor Übertrocknung:** Das Zelt verhält sich bei geschlossener Klappe wie ein geschlossener Curing-Behälter. Wertvolle Terpene und die ideale Restfeuchte bleiben perfekt erhalten, anstatt durch kontinuierlichen Luftzug auszutrocknen.
+* **Master-Slave Kombination:** Zwei Einheiten (Master an der Abluft, Slave an der Zuluft) synchronisieren sich in Echtzeit über ESP-NOW. Bei Zielerreichung wird das Trockenzelt an **beiden Enden gleichzeitig** hermetisch abgedichtet. *(Funktioniert natürlich auch hervorragend als Einzelgerät!)*
+* **Super einfache 1-Knob Bedienung:** Die tägliche Steuerung erfolgt kinderleicht über **einen einzigen Hauptdrehknopf (Poti A)** für den Feuchte-Sollwert (48–72%), inklusive automatischer *"Rigoros ZU"* ($\le 49\%$) und *"Rigoros AUF"* ($\ge 71\%$) Stellungen.
 
 ---
 
@@ -62,8 +74,8 @@ Das System erkennt alle Komponenten beim Systemstart vollautomatisch und passt s
    * Drahtlose Synchronisation zweier Einheiten über CCMP LMK 128-Bit Hardware-Verschlüsselung.
    * Der Master spiegelt seine Klappenstellung in Echtzeit auf den Slave.
    * **Notfall-Fail-Safe Schutz:** Bricht die Funkverbindung >60s ab, fährt der Slave automatisch auf 50% Sicherheitsöffnung oder übernimmt autonom über lokale Sensoren.
-5. **Stufe 5: Home Assistant Integration**
-   * Automatische MQTT Auto-Discovery aller Sensorwerte, Servostellungen, Empfangsfeldstärken und Watchdog-Countdowns.
+5. **Stufe 5: Nahtlose Home Assistant Integration (1-Klick Auto-Discovery)**
+   * Vollautomatische Erkennung aller Entitäten in Home Assistant (Rotor Position, Servo-Winkel, Temperatur, Feuchte, Taupunkt, VPD, RSSI, Potis A/B/C, Einzel-Sensoren).
 
 ---
 
@@ -94,39 +106,32 @@ Die Displays teilen sich denselben physischen SPI-Kabelbaum (JST-Stecker am YD-E
 
 ## 🚀 Key Features & Algorithmen
 
-### 1. Hardware 3-State Display-Auto-Detector
-* **TFT Mode:** Liest `GPIO 8` beim Start als `INPUT_PULLUP`. Die Transistor-Last der Backlight-Beleuchtung zieht den Pin auf `LOW` -> TFT erkannt.
-* **e-Paper Mode:** Pin verbleibt auf `HIGH`. Nach einem Reset-Puls über `GPIO 14` ändert sich der Status an `GPIO 8` (Busy-Signal) -> e-Paper erkannt.
-* **Headless Mode:** Wenn sich kein Signal ändert, wird das Zeichnen im Code vollständig übersprungen, um Strom zu sparen und die Loop-Performance zu maximieren.
+### 1. Simple 1-Knob Steuerung & Diskrete Zonen
+* Die Steuerung erfolgt im Alltag über **einen einzigen Drehknopf (Poti A)**:
+  * $\le 49\%$: **Rigoros ZU** ($0\%$ Öffnung, Klappe schließt vollständig).
+  * $\ge 71\%$: **Rigoros AUF** ($100\%$ Öffnung, maximale Entlüftung).
+  * $50 - 70\%$: Stufenlose proportionale Feuchteregelung.
 
-### 2. Entstörte Analogerfassung (EMA Low-Pass Filter)
-* Analogwerte werden mit einem **Exponential Moving Average (EMA)** Tiefpass-Filter geglättet.
-* Poti B (Gain-Faktor 0-400%) nutzt ein starkes $\alpha = 0,05$ Filter, um ADC-Rauschen komplett abzufangen und ein nervöses Springen in der Benutzeroberfläche zu verhindern.
-* In der Web-UI und MQTT wird Poti B als saubere Ganzzahl (`204 %` statt `204.4 %`) dargestellt.
+### 2. Nahtlose Home Assistant Integration (1-Klick Auto-Discovery)
+* **Zero-Configuration:** Home Assistant erkennt iDry-26 unter *Einstellungen ➔ Geräte & Dienste ➔ MQTT* **vollautomatisch**.
+* Überträgt live über 20+ Sensorwerte: Rotor-Position (%), Servo-Winkel (°), Temperatur (°C), Luftfeuchtigkeit (%), Taupunkt (°C), VPD (kPa), Signalstärke (dBm/LQI), Potis A/B/C und alle angeschlossenen I2C-Sensoren.
+* Spezieller 2048-Byte MQTT-Puffer verhindert das Abschneiden großer JSON-Entitäten.
 
-### 3. Closed-Loop Servo Ramping & Powerdown
+### 3. 1-Klick GitHub OTA Update mit Live-Terminal & Header-Schutz
+* **Online 1-Klick Update:** Prüft die aktuellste Version auf GitHub. Ein Klick auf **"🚀 Automatisch Online Updaten"** startet das Update.
+* **Interaktives Live-Terminal:** Zeigt im Web-Browser in Echtzeit die Download-Schritte, Dateigröße, Header-Prüfung, Flash-Fortschritt in % und den Neustart an.
+* **ESP32 Header-Schutz (Magic Byte `0xE9`):** Prüft vor dem Schreiben in die Flash-Bank das ESP32 Bootloader Magic Byte `0xE9`. Verhindert das versehentliche Flashen von fehlerhaften Dateien oder 404-Seiten zuverlässig.
+
+### 4. Closed-Loop Servo Ramping & Powerdown
 * **Sinus-Ramping (Sine Easing):** Klappenbewegungen erfolgen stufenlos über eine Sinuskurve (`0.5f * (1.0f - cos(t * PI))`) für vibrationsfreies Anfahren.
 * **Stromsparmodus & Summschutz:** Nach 1 Sekunde Stillstand an der Zielposition schaltet der ESP32 das PWM-Signal des Servos ab (`ledcWrite(18, 0)`). Das verhindert kontinuierliches Mikrozucken und Brummen des Servos im Leerlauf.
-* **Prozentuale Randbereiche:** 
-  * $\le 49\%$: Rigoros ZU (0% Klappenöffnung).
-  * $\ge 71\%$: Rigoros AUF (100% Klappenöffnung).
 
-### 4. Thermodynamischer Feuchteschutz (Saug-Sperre) & Drossel
+### 5. Thermodynamischer Feuchteschutz (Saug-Sperre)
 * **Saug-Sperre:** Ist die Außenluft feuchter als die Innenluft oder liegt sie $>2\%$ über dem Sollwert, schließt die Klappe sofort auf **0%**, um das Einsaugen feuchter Luft zu verhindern (inkl. akustischem Warn-Chime).
-* **Austrocknungsbegrenzer:** Bei extrem trockener Außenluft (Differenz $>10\%$) wird die maximale Öffnung automatisch gedrosselt, um Pflanzenschocks zu vermeiden.
 
-### 5. ESP-NOW Master/Slave Reconnection & 2-Stufen Fail-Safe
-* **Fast-Track Pairing:** Automatisches Channel-Hopping (Kanal 1–13) und Pairing per 128-Bit CCMP LMK Verschlüsselung.
-* **Aggressiver Stack-Reset (>20s):** Verliert der Slave für mehr als 20 Sekunden den Kontakt zum Master, wird der ESP-NOW Stack im Hintergrund alle 15s re-initialisiert, ohne den Mikrocontroller neu zu starten (Servo bleibt ungestört).
-* **Fail-Safe Schutz (>60s):**
-  * **Typ 0 (Standard):** Der Slave schaltet automatisch auf **50% Notfall-Öffnung**, damit der Luftstrom im Zelt niemals abbricht.
-  * **Typ 1 (Autonom):** Bei angeschlossenem lokalen Sensor übernimmt der Slave wieder eigenständig die Steuerung.
-  * Wird kein Sensor erkannt, erzwingt das Web-UI automatisch Typ 0 und blendet eine 3-zeilige Hilfestellung ein.
-
-### 6. Aktive Netzwerk-Watchdogs & Wöchentlicher Reboot
-* **Gateway Wächter:** Prüft alle 2s per TCP-Handshake (Timeout 400ms) die Verbindung zum Router-Gateway und trennt Geister-Links sofort.
-* **WLAN Watchdog Alarm (`wlan_time_trap`):** Spielt bei Verbindungsverlust im einstellbaren Intervall (0–330s) ein zweistufiges Akustiksignal (Doppel-Piep 500Hz) ab.
-* **Weekly Reboot Watchdog:** Bei 1 Woche Uptime (`millis() >= 604800000`) prüft der ESP32 die NTP-Uhrzeit und führt um **03:00 Uhr nachts** einen automatischen Neustart durch (bzw. sofort, falls kein NTP verfügbar). Der Countdown (`06D - 14:22:05`) wird im UI und via MQTT übertragen.
+### 6. ESP-NOW Master/Slave Reconnection & 2-Stufen Fail-Safe
+* **Fast-Track Pairing:** Automatisches Channel-Hopping (Kanal 1–13) und Pairing per 128-Bit CCMP LMK Verschlüsselung mit case-insensitivem MAC-Vergleich (`strcasecmp`).
+* **Fail-Safe Schutz (>60s):** Fällt die Funkverbindung aus, schaltet der Slave auf **50% Notfall-Öffnung** oder übernimmt autonom über eigene Sensoren.
 
 ---
 
@@ -152,8 +157,6 @@ pio run -t upload
 # Seriellen Monitor öffnen
 pio device monitor
 ```
-
----
 
 ## 📝 Lizenz
 
