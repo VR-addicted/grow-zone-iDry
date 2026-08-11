@@ -20,7 +20,6 @@
 #include <Update.h>
 #include <WiFiClientSecure.h>
 
-
 // Hardcoded Firmware Version (incremented on each release)
 const int localFirmwareVersion = 11;
 
@@ -1015,7 +1014,8 @@ float calculateDewPoint(float temp, float hum) {
 }
 
 float calculateVPD(float temp, float hum) {
-  if (isnan(temp) || isnan(hum)) return NAN;
+  if (isnan(temp) || isnan(hum))
+    return NAN;
   float svp = 0.61078f * exp((17.27f * temp) / (temp + 237.3f));
   float avp = svp * (hum / 100.0f);
   return svp - avp;
@@ -4011,10 +4011,14 @@ void registerHomeAssistantDevices() {
 
   // Primary System & Calculated Entities (Always Available)
   sendHADiscoveryConfig("rotor_pos", "Rotor Position", "%", "mdi:fan", "");
-  sendHADiscoveryConfig("servo_angle", "Servo Winkel", "°", "mdi:angle-acute", "");
-  sendHADiscoveryConfig("temperature", "Temperatur", "°C", "mdi:thermometer", "temperature");
-  sendHADiscoveryConfig("humidity", "Luftfeuchtigkeit", "%", "mdi:water-percent", "humidity");
-  sendHADiscoveryConfig("dewpoint", "Taupunkt", "°C", "mdi:thermometer-alert", "temperature");
+  sendHADiscoveryConfig("servo_angle", "Servo Winkel", "°", "mdi:angle-acute",
+                        "");
+  sendHADiscoveryConfig("temperature", "Temperatur", "°C", "mdi:thermometer",
+                        "temperature");
+  sendHADiscoveryConfig("humidity", "Luftfeuchtigkeit", "%",
+                        "mdi:water-percent", "humidity");
+  sendHADiscoveryConfig("dewpoint", "Taupunkt", "°C", "mdi:thermometer-alert",
+                        "temperature");
   sendHADiscoveryConfig("vpd", "VPD", "kPa", "mdi:gauge", "");
 
   // Register active temperature sensors dynamically
@@ -4066,11 +4070,13 @@ void registerHomeAssistantDevices() {
   sendHADiscoveryConfig("poti_b", "Poti B (Gain)", "%", "mdi:knob", "");
   sendHADiscoveryConfig("poti_c", "Poti C (Cal Offset)", "°", "mdi:knob", "");
   sendHADiscoveryConfig("linkquality", "Signalstärke", "lqi", "mdi:signal", "");
-  sendHADiscoveryConfig("rssi", "WLAN Signalstärke", "dBm", "mdi:wifi", "signal_strength");
+  sendHADiscoveryConfig("rssi", "WLAN Signalstärke", "dBm", "mdi:wifi",
+                        "signal_strength");
 }
 
 void publishMqttState() {
-  if (!mqttClient.connected()) return;
+  if (!mqttClient.connected())
+    return;
 
   JsonDocument doc;
 
@@ -4135,16 +4141,14 @@ void publishMqttState() {
   doc["espnow_role"] = sysConfig.espnow_role;
   doc["espnow_last_seen_ms"] =
       (sysConfig.espnow_role > 0 && strlen(sysConfig.espnow_peer_mac) > 0)
-          ? ((lastEspNowRxTime == 0) ? -1
-                                     : (long)(millis() - lastEspNowRxTime))
+          ? ((lastEspNowRxTime == 0) ? -1 : (long)(millis() - lastEspNowRxTime))
           : -1;
   doc["espnow_interval_ms"] =
       (sysConfig.espnow_role > 0 && strlen(sysConfig.espnow_peer_mac) > 0)
           ? avgEspNowIntervalMs
           : 0;
-  doc["linkquality"] = (WiFi.status() == WL_CONNECTED)
-                           ? map(WiFi.RSSI(), -100, -30, 0, 255)
-                           : 0;
+  doc["linkquality"] =
+      (WiFi.status() == WL_CONNECTED) ? map(WiFi.RSSI(), -100, -30, 0, 255) : 0;
   doc["rssi"] = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
   doc["watchdog_reset_countdown"] = getWatchdogResetCountdown();
 
@@ -4326,7 +4330,8 @@ void setup() {
 
       // Setup MQTT Settings
       mqttClient.setServer(sysConfig.mqtt_server, sysConfig.mqtt_port);
-      mqttClient.setBufferSize(2048); // Expand buffer from default 256 bytes for HA Discovery JSON
+      mqttClient.setBufferSize(
+          2048); // Expand buffer from default 256 bytes for HA Discovery JSON
       baseTopic = "idry/" + String(sysConfig.mqtt_device_name);
       stateTopic = baseTopic + "/state";
 
