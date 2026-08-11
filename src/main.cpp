@@ -21,7 +21,7 @@
 #include <WiFiClientSecure.h>
 
 // Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 27;
+const int localFirmwareVersion = 28;
 
 // Sensor Libraries
 #include <Adafruit_BME280.h>
@@ -2246,14 +2246,14 @@ void handlePortalRoot() {
         </div>
     </div>
 
-    <!-- Fullscreen Interactive Zoom Modal -->
     <div id="chart-modal" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(15,23,42,0.88); backdrop-filter:blur(10px); z-index:999; align-items:center; justify-content:center; padding:20px;">
-        <div style="background:#1e293b; border:1px solid rgba(255,255,255,0.1); border-radius:16px; padding:24px; max-width:700px; width:100%; box-shadow:0 25px 50px -12px rgba(0,0,0,0.7);">
-            <h2 id="modal-title" style="font-size:18px; color:#818cf8; margin-bottom:15px; text-align:center;">Verlauf (3h Zoom)</h2>
-            <div style="width:100%; overflow-x:auto; background:#0f172a; border-radius:8px; border:1px solid rgba(255,255,255,0.05); padding:10px;">
-                <canvas id="modal-canvas" width="600" height="200" style="display:block; width:100%; height:200px;"></canvas>
+        <div style="background:#1e293b; border:1px solid rgba(255,255,255,0.1); border-radius:16px; padding:24px; max-width:700px; width:100%; box-shadow:0 25px 50px -12px rgba(0,0,0,0.7); position:relative;">
+            <h2 id="modal-title" style="font-size:18px; color:#818cf8; margin-bottom:15px; text-align:center;">Verlauf (24h Zoom)</h2>
+            <div style="width:100%; overflow-x:auto; background:#0f172a; border-radius:8px; border:1px solid rgba(255,255,255,0.05); padding:10px; position:relative;" id="modal-canvas-container">
+                <canvas id="modal-canvas" width="600" height="200" style="display:block; width:100%; height:200px; cursor:pointer;"></canvas>
+                <div id="canvas-floating-popup" style="display:none; position:absolute; padding:5px 10px; background:#0f172a; border:1.5px solid #38bdf8; border-radius:6px; font-family:monospace; font-size:12px; color:#fff; pointer-events:none; z-index:10; white-space:nowrap; box-shadow:0 4px 14px rgba(0,0,0,0.7); transform:translate(-50%, -100%); transition: left 0.05s ease-out, top 0.05s ease-out;"></div>
             </div>
-            <div id="modal-tooltip" style="font-family:monospace; font-size:13px; color:#38bdf8; margin-top:12px; text-align:center; min-height:18px;">Hover über die Grafik für Details...</div>
+            <div id="modal-tooltip" style="font-family:monospace; font-size:13px; color:#38bdf8; margin-top:12px; text-align:center; min-height:18px;">Tippe oder fahre über eine Kerze für Details...</div>
             <button onclick="closeChartModal()" style="margin-top:18px; width:100%; padding:12px; border-radius:8px; border:none; background:#3b82f6; color:white; font-weight:bold; cursor:pointer; font-size:14px;">Schließen</button>
         </div>
     </div>
@@ -2788,6 +2788,118 @@ void handlePortalRoot() {
                 ctx.lineWidth = 2 * dpr;
                 ctx.beginPath(); ctx.moveTo(tx, baseY); ctx.lineTo(tx, baseY + 6 * dpr); ctx.stroke();
             }
+        }
+
+        const modalCanvas = document.getElementById('modal-canvas');
+        if (modalCanvas) {
+            function handleModalPointer(e) {
+                if (!history24h || history24h.length === 0) return;
+                const rect = modalCanvas.getBoundingClientRect();
+                const clientX = e.clientX || (e.touches && e.touches[0] ? e.touches[0].clientX : 0);
+                const clientY = e.clientY || (e.touches && e.touches[0] ? e.touches[0].clientY : 0);
+                if (!clientX) return;
+
+                const dpr = window.devicePixelRatio || 1;
+                const cssX = clientX - rect.left;
+                const cssY = clientY - rect.top;
+                const mouseX = cssX * dpr;
+                const mouseY = cssY * dpr;
+
+                const totalSamples = 288;
+                const marginL = 40 * dpr;
+                const chartW = modalCanvas.width - marginL;
+                const chartH = modalCanvas.height - 15 * dpr;
+                const candleW = chartW / totalSamples;
+                const offsetIndex = totalSamples - history24h.length;
+
+                const candleIndex = Math.floor((mouseX - marginL) / candleW);
+                const arrayIdx = candleIndex - offsetIndex;
+
+                const popup = document.getElementById('canvas-floating-popup');
+                const tooltipEl = document.getElementById('modal-tooltip');
+
+                if (arrayIdx >= 0 && arrayIdx < history24h.length) {
+                    const d = history24h[arrayIdx];
+                    let type = currentZoomType, index = 0;
+                    if (type.startsWith('temp_')) { index = parseInt(type.split('_')[1]); type = 'temp'; }
+                    if (type.startsWith('hum_')) { index = parseInt(type.split('_')[1]); type = 'hum'; }
+                    if (type.startsWith('lux_')) { index = parseInt(type.split('_')[1]); type = 'lux'; }
+
+                    let valMax = 0, valMin = 0, minY = 0, maxY = 100, unit = "%";
+                    if (type === 'temp') {
+                        valMax = (index === 0 ? d.t0 : d.t1);
+                        valMin = (index === 0 ? d.t0_min : d.t1_min);
+                        maxY = 50; unit = " °C";
+                    } else if (type === 'hum') {
+                        valMax = (index === 0 ? d.h0 : d.h1);
+                        valMin = (index === 0 ? d.h0_min : d.h1_min);
+                        maxY = 100; unit = " %";
+                    } else if (type === 'lux') {
+                        valMax = (index === 0 ? d.l0 : d.l1); valMin = valMax;
+                        maxY = 1000; unit = " Lux";
+                    } else if (type === 'rotor') {
+                        valMax = d.r; valMin = valMax; maxY = 100; unit = " %";
+                    } else if (type === 'espnow') {
+                        valMax = d.el; valMin = valMax; maxY = 49; unit = "s Loss";
+                    } else if (type === 'mqtt') {
+                        valMax = d.ml; valMin = valMax; maxY = 49; unit = "s Loss";
+                    } else if (type === 'rssi') {
+                        let r = (d.rssi !== undefined && d.rssi !== null && d.rssi !== 0) ? d.rssi : -100;
+                        valMax = Math.round((r + 100) * 10 / 7); valMin = valMax; maxY = 100; unit = "% (" + r + " dBm)";
+                    }
+
+                    if (valMax === null || valMax === undefined || isNaN(valMax)) return;
+                    if (valMin === null || valMin === undefined || isNaN(valMin)) valMin = valMax;
+
+                    const minH = ((valMin - minY) / (maxY - minY)) * chartH;
+                    const maxH = ((valMax - minY) / (maxY - minY)) * chartH;
+                    const yBase = chartH - minH;
+                    const yTop = chartH - maxH;
+
+                    const minutesAgo = (history24h.length - 1 - arrayIdx) * 5;
+                    let timeStr = "JETZT";
+                    if (minutesAgo > 0) {
+                        const hrs = Math.floor(minutesAgo / 60);
+                        const mins = minutesAgo % 60;
+                        timeStr = "-" + (hrs > 0 ? hrs + "h " : "") + mins + "m";
+                    }
+
+                    let isYellowSegment = (type === 'temp' || type === 'hum') && (mouseY <= yBase && mouseY >= yTop);
+                    let detailTxt = "", badgeBorderColor = "#38bdf8";
+
+                    if (isYellowSegment && Math.abs(valMax - valMin) > 0.05) {
+                        let delta = (valMax - valMin).toFixed(1);
+                        detailTxt = `Max: ${valMax.toFixed(1)}${unit} (Spike Delta: +${delta}${unit}) [${timeStr}]`;
+                        badgeBorderColor = "#facc15";
+                    } else if (type === 'temp' || type === 'hum') {
+                        detailTxt = `Min: ${valMin.toFixed(1)}${unit} (Max: ${valMax.toFixed(1)}${unit}) [${timeStr}]`;
+                        badgeBorderColor = "#38bdf8";
+                    } else {
+                        detailTxt = `${valMax.toFixed(1)}${unit} [${timeStr}]`;
+                        badgeBorderColor = (type === 'espnow' || type === 'mqtt') ? "#f87171" : (type === 'rssi' ? "#22c55e" : "#38bdf8");
+                    }
+
+                    if (popup) {
+                        const targetY = isYellowSegment ? yTop : (type === 'temp' || type === 'hum' ? yBase : chartH - maxH);
+                        const cssTargetX = (marginL + (candleIndex + 0.5) * candleW) / dpr;
+                        const cssTargetY = (targetY / dpr) - 15;
+
+                        popup.style.display = 'block';
+                        popup.style.left = cssTargetX + 'px';
+                        popup.style.top = cssTargetY + 'px';
+                        popup.style.borderColor = badgeBorderColor;
+                        popup.innerText = detailTxt;
+                    }
+
+                    if (tooltipEl) {
+                        tooltipEl.innerText = detailTxt;
+                        tooltipEl.style.color = badgeBorderColor;
+                    }
+                }
+            }
+
+            modalCanvas.addEventListener('pointerdown', handleModalPointer);
+            modalCanvas.addEventListener('pointermove', handleModalPointer);
         }
 
         setInterval(updateData, 1000);
