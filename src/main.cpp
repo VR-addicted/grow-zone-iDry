@@ -21,7 +21,7 @@
 #include <WiFiClientSecure.h>
 
 // Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 25;
+const int localFirmwareVersion = 26;
 
 // Sensor Libraries
 #include <Adafruit_BME280.h>
@@ -2337,10 +2337,11 @@ void handlePortalRoot() {
                             document.getElementById('hum-' + i).innerText = data.sensors[i].humidity !== null ? data.sensors[i].humidity.toFixed(1) + " %" : "--";
                             document.getElementById('dp-' + i).innerText = data.sensors[i].dewpoint !== null ? data.sensors[i].dewpoint.toFixed(1) + " °C" : "--";
                             if (data.sensors[i].type === "BME280" && data.sensors[i].pressure !== null && data.sensors[i].pressure !== undefined) {
-                                document.getElementById('press-row-' + i).style.display = 'flex';
+                                document.getElementById('press-row-' + i).style.visibility = 'visible';
                                 document.getElementById('press-' + i).innerText = data.sensors[i].pressure.toFixed(1) + " hPa";
                             } else {
-                                document.getElementById('press-row-' + i).style.display = 'none';
+                                document.getElementById('press-row-' + i).style.visibility = 'hidden';
+                                document.getElementById('press-' + i).innerText = "--";
                             }
                         } else {
                             card.style.display = 'none';
@@ -2591,7 +2592,18 @@ void handlePortalRoot() {
                 } else {
                     const valH = ((valMax - minY) / (maxY - minY)) * chartH;
                     const y = chartH - valH;
-                    ctx.fillStyle = (type === 'espnow' || type === 'mqtt') ? '#ef4444' : '#38bdf8';
+                    if (type === 'espnow' || type === 'mqtt') {
+                        ctx.fillStyle = '#ef4444';
+                    } else if (type === 'rssi') {
+                        const rssiGrad = ctx.createLinearGradient(0, chartH, 0, 0);
+                        rssiGrad.addColorStop(0.0, '#ef4444');  // Rot (Schwacher Empfang)
+                        rssiGrad.addColorStop(0.35, '#f97316'); // Orange
+                        rssiGrad.addColorStop(0.65, '#eab308'); // Gelb
+                        rssiGrad.addColorStop(1.0, '#22c55e');  // Grün (Starker Empfang)
+                        ctx.fillStyle = rssiGrad;
+                    } else {
+                        ctx.fillStyle = '#38bdf8';
+                    }
                     ctx.fillRect(x1, y, barW, valH);
                 }
             }
@@ -2735,7 +2747,18 @@ void handlePortalRoot() {
                 } else {
                     const valH = ((valMax - minY) / (maxY - minY)) * chartH;
                     const y = chartH - valH;
-                    ctx.fillStyle = (type === 'espnow' || type === 'mqtt') ? '#ef4444' : '#38bdf8';
+                    if (type === 'espnow' || type === 'mqtt') {
+                        ctx.fillStyle = '#ef4444';
+                    } else if (type === 'rssi') {
+                        const rssiGrad = ctx.createLinearGradient(0, chartH, 0, 0);
+                        rssiGrad.addColorStop(0.0, '#ef4444');  // Rot
+                        rssiGrad.addColorStop(0.35, '#f97316'); // Orange
+                        rssiGrad.addColorStop(0.65, '#eab308'); // Gelb
+                        rssiGrad.addColorStop(1.0, '#22c55e');  // Grün
+                        ctx.fillStyle = rssiGrad;
+                    } else {
+                        ctx.fillStyle = '#38bdf8';
+                    }
                     ctx.fillRect(x1, y, barW, valH);
                 }
             }
