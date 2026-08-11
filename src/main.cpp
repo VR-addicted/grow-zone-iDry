@@ -21,7 +21,7 @@
 #include <WiFiClientSecure.h>
 
 // Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 29;
+const int localFirmwareVersion = 30;
 
 // Sensor Libraries
 #include <Adafruit_BME280.h>
@@ -2263,15 +2263,70 @@ void handlePortalRoot() {
         const wifiSSID = ")rawhtml";
     html += String(sysConfig.wifi_ssid);
     html += R"rawhtml(";
-        function setMoon(val) {
+        let favCanvas = null;
+        function updateFaviconMoon(p, isSlave) {
+            if (!favCanvas) {
+                favCanvas = document.createElement('canvas');
+                favCanvas.width = 32;
+                favCanvas.height = 32;
+            }
+            const ctx = favCanvas.getContext('2d');
+            ctx.clearRect(0, 0, 32, 32);
+
+            // 1. Theme Background (Rounded badge)
+            ctx.fillStyle = isSlave ? '#3f0e0e' : '#171a33';
+            ctx.beginPath();
+            if (ctx.roundRect) {
+                ctx.roundRect(0, 0, 32, 32, 6);
+            } else {
+                ctx.rect(0, 0, 32, 32);
+            }
+            ctx.fill();
+
+            // 2. Base Dark Moon Circle (Center 16,16, Radius 11)
+            const r = 11;
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(16, 16, r, 0, Math.PI * 2);
+            ctx.fillStyle = '#191b28';
+            ctx.fill();
+            ctx.clip();
+
+            // 3. Light Blue Shutter Phase (translateX from -2r to 0)
+            const shiftX = (p / 100.0) * (2 * r) - (2 * r);
+            ctx.beginPath();
+            ctx.arc(16 + shiftX, 16, r, 0, Math.PI * 2);
+            ctx.fillStyle = '#38bdf8';
+            ctx.fill();
+            ctx.restore();
+
+            // 4. Outer Bevel & Subtle Shadow Rings
+            ctx.beginPath();
+            ctx.arc(16, 16, r, 0, Math.PI * 2);
+            ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+
+            // 5. Update Favicon Link in DOM
+            let link = document.getElementById('dynamic-favicon');
+            if (!link) {
+                link = document.createElement('link');
+                link.id = 'dynamic-favicon';
+                link.rel = 'icon';
+                link.type = 'image/png';
+                document.head.appendChild(link);
+            }
+            link.href = favCanvas.toDataURL('image/png');
+        }
+
+        function setMoon(val, isSlave) {
             const m = document.getElementById('luna');
-            if (!m) return;
             let p = parseInt(val);
             if (isNaN(p)) p = 0;
             if (p < 0) p = 0;
             if (p > 100) p = 100;
-            // Translate the circular blade pseudo-element from -100% (fully closed) to 0% (fully open/aligned)
-            m.style.setProperty('--ts', `translateX(${-100 + p}%)`);
+            if (m) m.style.setProperty('--ts', `translateX(${-100 + p}%)`);
+            updateFaviconMoon(p, isSlave);
         }
         function fetchWithTimeout(resource, options = {}) {
             const { timeout = 1000 } = options;
@@ -2380,7 +2435,7 @@ void handlePortalRoot() {
                     document.getElementById('rotor-pos').innerText = data.rotor_position.toFixed(0) + " %";
                     const m = document.getElementById('luna');
                     if (m) m.style.backgroundColor = '#191b28';
-                    setMoon(data.rotor_position);
+                    setMoon(data.rotor_position, data.espnow_role === 2);
 
                     // Update ESP-NOW card status dynamically
                     let espnowCard = document.getElementById('espnow-card');
