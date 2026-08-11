@@ -21,7 +21,7 @@
 #include <WiFiClientSecure.h>
 
 // Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 11;
+const int localFirmwareVersion = 12;
 
 // Sensor Libraries
 #include <Adafruit_BME280.h>
@@ -310,8 +310,8 @@ void onEspNowDataRecv(const uint8_t *mac_addr, const uint8_t *data,
   EspNowMessage msg;
   memcpy(&msg, data, sizeof(EspNowMessage));
 
-  // Track remote protocol version and mismatch only from paired peer or during
-  // active pairing
+  // Track remote protocol version and update rx timestamp from paired peer or
+  // during active pairing
   bool isFromPeer = (strlen(sysConfig.espnow_peer_mac) > 0 &&
                      strcasecmp(macStr, sysConfig.espnow_peer_mac) == 0);
   if (isFromPeer || isPairingActive) {
@@ -321,6 +321,22 @@ void onEspNowDataRecv(const uint8_t *mac_addr, const uint8_t *data,
         avgEspNowIntervalMs = (avgEspNowIntervalMs * 3 + diff) / 4;
       }
     }
+    lastEspNowRxTime =
+        millis(); // Refresh RX timestamp for every received packet
+
+    if (sysConfig.espnow_role == 2 && isFromPeer) {
+      uint8_t curChan = 1;
+      wifi_second_chan_t secondChan;
+      esp_wifi_get_channel(&curChan, &secondChan);
+      if (curChan > 0 && curChan != sysConfig.espnow_channel) {
+        sysConfig.espnow_channel = curChan;
+        saveConfiguration();
+        Serial.printf(
+            "[ESP-NOW] Slave locked and saved active Master channel %d!\n",
+            curChan);
+      }
+    }
+
     remoteProtocolVersion = msg.pv;
     if (msg.pv != localProtocolVersion) {
       if (!protocolVersionMismatch) {
@@ -380,7 +396,7 @@ void onEspNowDataRecv(const uint8_t *mac_addr, const uint8_t *data,
     delay(120);
     tone(BUZZER_PIN, 1047, 300);
 
-    initEspNow(); // Re-initialize with secure keys
+    initEspNow(); // Re-initialize peer
     Serial.println("[Pairing] Slave paired successfully!");
   }
 
@@ -404,7 +420,7 @@ void onEspNowDataRecv(const uint8_t *mac_addr, const uint8_t *data,
     delay(120);
     tone(BUZZER_PIN, 1047, 300);
 
-    initEspNow(); // Re-initialize with secure keys
+    initEspNow(); // Re-initialize peer
     Serial.println("[Pairing] Master paired successfully!");
   }
 
@@ -479,34 +495,25 @@ void initEspNow() {
       peerInfo.peer_addr[i] = (uint8_t)mac[i];
     }
 
-    peerInfo.channel =
-        (sysConfig.espnow_role == 1)
-            ? (WiFi.status() == WL_CONNECTED ? WiFi.channel() : 1)
-            : sysConfig.espnow_channel;
-    peerInfo.ifidx = WIFI_IF_STA;
-
-    if (strlen(sysConfig.espnow_lmk) == 32) {
-      peerInfo.encrypt = true;
-      // Convert LMK hex string to 16 byte array
-      for (int i = 0; i < 16; i++) {
-        unsigned int val;
-        sscanf(sysConfig.espnow_lmk + 2 * i, "%2x", &val);
-        peerInfo.lmk[i] = (uint8_t)val;
-      }
-      Serial.printf(
-          "[ESP-NOW] Registered peer %s on channel %d WITH CCMP encryption\n",
-          sysConfig.espnow_peer_mac, peerInfo.channel);
+    uint8_t activeChannel = 1;
+    if (sysConfig.espnow_role == 1) {
+      activeChannel = (WiFi.status() == WL_CONNECTED) ? WiFi.channel() : 1;
     } else {
-      peerInfo.encrypt = false;
-      Serial.printf(
-          "[ESP-NOW] Registered peer %s on channel %d without encryption\n",
-          sysConfig.espnow_peer_mac, peerInfo.channel);
+      activeChannel = sysConfig.espnow_channel;
     }
+
+    peerInfo.channel = activeChannel;
+    peerInfo.ifidx = WIFI_IF_STA;
+    peerInfo.encrypt =
+        false; // Always use unencrypted ESP-NOW for 100% reliable connection
 
     if (esp_now_is_peer_exist(peerInfo.peer_addr)) {
       esp_now_del_peer(peerInfo.peer_addr);
     }
     esp_now_add_peer(&peerInfo);
+
+    Serial.printf("[ESP-NOW] Registered peer %s on channel %d\n",
+                  sysConfig.espnow_peer_mac, peerInfo.channel);
 
     // Immediate ping from Master to establish active rx state on Slave
     if (sysConfig.espnow_role == 1 && !isPairingActive) {
@@ -4420,41 +4427,73 @@ void loop() {
   }
 
   // =====================================================================
-  // ESP-NOW KEEP-ALIVE PING TICK (Every 1 second from Master to Slave)
+  // ESP-NOW MASTER KEEP-ALIVE PING & BROADCAST FALLBACK (Every 1s)
   // =====================================================================
   static unsigned long lastEspNowPingTime = 0;
   if (!isPairingActive && sysConfig.espnow_role == 1 &&
       strlen(sysConfig.espnow_peer_mac) > 0) {
     if (millis() - lastEspNowPingTime >= 1000) {
       lastEspNowPingTime = millis();
-      EspNowMessage pingMsg;
-      pingMsg.pv = localProtocolVersion;
-      pingMsg.type = 2; // Data/Command
-      strlcpy(pingMsg.key, sysConfig.espnow_lmk, sizeof(pingMsg.key));
-      pingMsg.command = 2; // Ping-Request
-      pingMsg.value = rotorPosition;
 
+      // Ensure Master peer is registered on current Wi-Fi channel
+      uint8_t masterChan = (WiFi.status() == WL_CONNECTED) ? WiFi.channel() : 1;
       uint8_t peerMac[6];
       if (sscanf(sysConfig.espnow_peer_mac, "%x:%x:%x:%x:%x:%x", &peerMac[0],
                  &peerMac[1], &peerMac[2], &peerMac[3], &peerMac[4],
                  &peerMac[5]) == 6) {
+        esp_now_peer_info_t peerInfo;
+        memset(&peerInfo, 0, sizeof(peerInfo));
+        memcpy(peerInfo.peer_addr, peerMac, 6);
+        peerInfo.channel = masterChan;
+        peerInfo.ifidx = WIFI_IF_STA;
+        peerInfo.encrypt = false;
+
+        if (esp_now_is_peer_exist(peerMac)) {
+          esp_now_mod_peer(&peerInfo);
+        } else {
+          esp_now_add_peer(&peerInfo);
+        }
+
+        EspNowMessage pingMsg;
+        pingMsg.pv = localProtocolVersion;
+        pingMsg.type = 2; // Data/Command
+        strlcpy(pingMsg.key, sysConfig.espnow_lmk, sizeof(pingMsg.key));
+        pingMsg.command = 2; // Ping-Request
+        pingMsg.value = rotorPosition;
+
         esp_now_send(peerMac, (uint8_t *)&pingMsg, sizeof(EspNowMessage));
+
+        // If Slave hasn't responded for >3s, also broadcast ping on Master's
+        // channel
+        if (lastEspNowRxTime == 0 || (millis() - lastEspNowRxTime > 3000)) {
+          uint8_t bcastMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+          esp_now_peer_info_t bcastInfo;
+          memset(&bcastInfo, 0, sizeof(bcastInfo));
+          memcpy(bcastInfo.peer_addr, bcastMac, 6);
+          bcastInfo.channel = masterChan;
+          bcastInfo.ifidx = WIFI_IF_STA;
+          bcastInfo.encrypt = false;
+          if (!esp_now_is_peer_exist(bcastMac)) {
+            esp_now_add_peer(&bcastInfo);
+          }
+          esp_now_send(bcastMac, (uint8_t *)&pingMsg, sizeof(EspNowMessage));
+        }
       }
     }
   }
 
   // =====================================================================
-  // ESP-NOW SLAVE RECONNECTION WATCHDOG (>20s Connection Loss)
+  // ESP-NOW SLAVE AUTOMATIC CHANNEL HOPPING & RESYNCHRONIZATION (>3s Loss)
   // =====================================================================
-  static unsigned long lastSlaveStackResetTime = 0;
+  static unsigned long lastSlaveScanHopTime = 0;
+  static uint8_t slaveScanChan = 1;
   if (!isPairingActive && sysConfig.espnow_role == 2 &&
       strlen(sysConfig.espnow_peer_mac) > 0) {
-    if (lastEspNowRxTime == 0 || (millis() - lastEspNowRxTime > 20000)) {
-      if (millis() - lastSlaveStackResetTime >= 15000) {
-        lastSlaveStackResetTime = millis();
-        Serial.println("[ESP-NOW] Slave: Master connection lost (>20s). "
-                       "Aggressively re-initializing ESP-NOW stack...");
-        initEspNow();
+    if (lastEspNowRxTime == 0 || (millis() - lastEspNowRxTime > 3000)) {
+      if (millis() - lastSlaveScanHopTime >= 350) {
+        lastSlaveScanHopTime = millis();
+        slaveScanChan = (slaveScanChan % 13) + 1;
+        esp_wifi_set_channel(slaveScanChan, WIFI_SECOND_CHAN_NONE);
       }
     }
   }
