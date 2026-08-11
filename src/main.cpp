@@ -21,7 +21,7 @@
 #include <WiFiClientSecure.h>
 
 // Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 24;
+const int localFirmwareVersion = 25;
 
 // Sensor Libraries
 #include <Adafruit_BME280.h>
@@ -2570,7 +2570,9 @@ void handlePortalRoot() {
                 if (valMin < minY) valMin = minY; if (valMin > maxY) valMin = maxY;
 
                 const candleIndex = offsetIndex + i;
-                const x = marginL + candleIndex * candleW;
+                const x1 = marginL + candleIndex * candleW;
+                const x2 = marginL + (candleIndex + 1) * candleW;
+                const barW = Math.max(1, x2 - x1);
 
                 if (type === 'temp' || type === 'hum') {
                     const minH = ((valMin - minY) / (maxY - minY)) * chartH;
@@ -2580,17 +2582,17 @@ void handlePortalRoot() {
 
                     // Base light-blue candle up to min value
                     ctx.fillStyle = '#38bdf8';
-                    ctx.fillRect(x + 1, yBase, Math.max(1, candleW - 2), minH);
+                    ctx.fillRect(x1, yBase, barW, minH);
 
                     // Yellow spike candle top segment (delta max-min within minute)
                     const spikeH = Math.max(2 * dpr, yBase - yTop);
                     ctx.fillStyle = '#facc15';
-                    ctx.fillRect(x + 1, yTop, Math.max(1, candleW - 2), spikeH);
+                    ctx.fillRect(x1, yTop, barW, spikeH);
                 } else {
                     const valH = ((valMax - minY) / (maxY - minY)) * chartH;
                     const y = chartH - valH;
-                    ctx.fillStyle = (type === 'espnow' || type === 'mqtt') ? '#f87171' : '#38bdf8';
-                    ctx.fillRect(x + 1, y, Math.max(1, candleW - 2), valH);
+                    ctx.fillStyle = (type === 'espnow' || type === 'mqtt') ? '#ef4444' : '#38bdf8';
+                    ctx.fillRect(x1, y, barW, valH);
                 }
             }
 
@@ -2712,7 +2714,9 @@ void handlePortalRoot() {
                 if (valMin < minY) valMin = minY; if (valMin > maxY) valMin = maxY;
 
                 const candleIndex = offsetIndex + i;
-                const x = marginL + candleIndex * candleW;
+                const x1 = marginL + candleIndex * candleW;
+                const x2 = marginL + (candleIndex + 1) * candleW;
+                const barW = Math.max(1, x2 - x1);
 
                 if (type === 'temp' || type === 'hum') {
                     const minH = ((valMin - minY) / (maxY - minY)) * chartH;
@@ -2722,17 +2726,17 @@ void handlePortalRoot() {
 
                     // Base light-blue candle body up to min value
                     ctx.fillStyle = '#38bdf8';
-                    ctx.fillRect(x + 1, yBase, Math.max(2, candleW - 2), minH);
+                    ctx.fillRect(x1, yBase, barW, minH);
 
                     // Yellow spike top segment (delta max-min within 5-min bucket)
                     const spikeH = Math.max(2 * dpr, yBase - yTop);
                     ctx.fillStyle = '#facc15';
-                    ctx.fillRect(x + 1, yTop, Math.max(2, candleW - 2), spikeH);
+                    ctx.fillRect(x1, yTop, barW, spikeH);
                 } else {
                     const valH = ((valMax - minY) / (maxY - minY)) * chartH;
                     const y = chartH - valH;
                     ctx.fillStyle = (type === 'espnow' || type === 'mqtt') ? '#ef4444' : '#38bdf8';
-                    ctx.fillRect(x + 1, y, Math.max(2, candleW - 2), valH);
+                    ctx.fillRect(x1, y, barW, valH);
                 }
             }
 
