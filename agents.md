@@ -13,7 +13,7 @@ This workspace contains customized configuration rules for the YD-ESP32-S3, Wave
 
 ## Custom Driver & Display Autodetect Rules
 * **Hardware Profiles Supported:** Waveshare 3.52" e-Paper (B) 360x240 pixels (Red/Black/White), ILI9341 3.2" TFT Display 320x240 pixels, or Headless Mode (no display connected).
-* **Mismatched Driver Class:** For 3.52" e-Paper, always use `GxEPD2_213_Z19c` as driver class spoofed to 360x240 resolution (`WIDTH = 240`, `HEIGHT = 360` in `GxEPD2_213_Z19c.h`).
+* **Driver Class:** For 3.52" e-Paper, use `GxEPD2_213_Z19c` initialized for 360x240 resolution. All driver parameters are handled automatically in source code without requiring manual file edits.
 * **Display Class Wrapper:** Always use `GxEPD2_3C` for three-colour rendering (Black, Red, White).
 * **Do NOT use 4-colour driver (`GxEPD2_4C` or `GxEPD2_350c_GDEM035F51`)** because the panel physically lacks yellow/orange pigments and will produce layout corruption.
 * **3-State Display Autodetector:**

@@ -135,19 +135,6 @@ Die Displays teilen sich denselben physischen SPI-Kabelbaum (JST-Stecker am YD-E
 
 ---
 
-## 🛠️ Treiber-Anpassung für 3.52" e-Paper (GxEPD2 Spoofing)
-
-Um das 3.52" e-Paper Display mit der `GxEPD2`-Bibliothek anzusteuern, muss die Datei `.pio/libdeps/esp32-s3-devkitc-1/GxEPD2/src/epd3c/GxEPD2_213_Z19c.h` angepasst werden:
-
-```cpp
-// Zeilen 24-26 auf 240x360 auflösen:
-static const uint16_t WIDTH = 240;
-static const uint16_t WIDTH_VISIBLE = WIDTH;
-static const uint16_t HEIGHT = 360;
-```
-
----
-
 ## 💻 Bauen & Flashen via PlatformIO
 
 ```bash
