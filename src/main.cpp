@@ -21,7 +21,9 @@
 #include <WiFiClientSecure.h>
 
 // Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 31;
+const int localFirmwareVersion = 33;
+extern int cachedOnlineVersion;
+void checkGithubUpdateAsync(bool force = false);
 
 // Sensor Libraries
 #include <Adafruit_BME280.h>
@@ -1783,6 +1785,8 @@ void handleGetData() {
   doc["wifi_mac"] = WiFi.macAddress();
   doc["wifi_channel"] = WiFi.status() == WL_CONNECTED ? WiFi.channel() : 1;
   doc["watchdog_reset_countdown"] = getWatchdogResetCountdown();
+  doc["update_available"] = (cachedOnlineVersion > localFirmwareVersion);
+  doc["online_version"] = cachedOnlineVersion;
   doc["fw_version"] = "1." + String(localFirmwareVersion);
   doc["loops_per_sec"] = loopsPerSecond;
 
@@ -3276,6 +3280,13 @@ void handleSettingsPage() {
             70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
             100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
         }
+        @keyframes pulse-update-border {
+            0%, 100% { border-color: rgba(129, 140, 248, 0.4); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); color: #cbd5e1; }
+            50% { border-color: #ef4444 !important; color: #f87171 !important; box-shadow: 0 0 14px rgba(239, 68, 68, 0.9); }
+        }
+        .pulse-update {
+            animation: pulse-update-border 1s infinite ease-in-out !important;
+        }
     </style>
 </head>
 <body>
@@ -3591,7 +3602,7 @@ void handleSettingsPage() {
             </div>
             <form id="reset-form" action="/settings/reset" method="POST">
                 <div class="btn-row" style="margin-top: 5px; flex-direction: column; gap: 12px;">
-                    <a href="/firmware" class="btn btn-secondary" style="width:100%; border-color: rgba(129, 140, 248, 0.4); color: #818cf8; text-decoration: none; text-align: center; display: block; box-sizing: border-box;">Firmware & OTA Update</a>
+                    <a href="/firmware" id="ota-update-btn" class="btn btn-secondary" style="width:100%; border-color: rgba(129, 140, 248, 0.4); color: #cbd5e1; text-decoration: none; text-align: center; display: block; box-sizing: border-box;">Firmware & OTA Update</a>
                     <button type="submit" name="action" value="reboot" class="btn btn-secondary" style="width:100%; border-color: rgba(74, 222, 128, 0.4); color: #4ade80;">Reboot Device</button>
                     <button type="submit" name="action" value="defaults" class="btn btn-secondary" style="width:100%;">Restore Defaults (ohne WLAN/MQTT)</button>
                     <button type="submit" name="action" value="delete_espnow" class="btn btn-secondary" style="width:100%; border-color: rgba(239, 68, 68, 0.4); color: #f87171;">Delete ESPNOW connections</button>
@@ -3852,6 +3863,14 @@ void handleSettingsPage() {
                     const settingsBenchEl = document.getElementById('footer-bench-settings');
                     if (settingsBenchEl) {
                         settingsBenchEl.innerText = data.loops_per_sec || 0;
+                    }
+                    const otaBtn = document.getElementById('ota-update-btn');
+                    if (otaBtn) {
+                        if (data.update_available) {
+                            otaBtn.classList.add('pulse-update');
+                        } else {
+                            otaBtn.classList.remove('pulse-update');
+                        }
                     }
                 }).catch(err => console.error(err));
         }
@@ -4298,6 +4317,9 @@ void handleFavicon() {
 // FIRMWARE & ONLINE / MANUAL OTA UPDATE HANDLERS
 // =====================================================================
 
+int cachedOnlineVersion = -1;
+unsigned long lastGithubCheckTime = 0;
+
 int fetchGithubFirmwareVersion() {
   if (WiFi.status() != WL_CONNECTED)
     return -1;
@@ -4321,8 +4343,22 @@ int fetchGithubFirmwareVersion() {
   return -1;
 }
 
+void checkGithubUpdateAsync(bool force) {
+  if (WiFi.status() != WL_CONNECTED)
+    return;
+  if (force || lastGithubCheckTime == 0 ||
+      millis() - lastGithubCheckTime >= 600000UL) {
+    lastGithubCheckTime = millis();
+    int ver = fetchGithubFirmwareVersion();
+    if (ver > 0) {
+      cachedOnlineVersion = ver;
+    }
+  }
+}
+
 void handleFirmwarePage() {
-  int onlineVersion = fetchGithubFirmwareVersion();
+  checkGithubUpdateAsync(true);
+  int onlineVersion = cachedOnlineVersion;
   String html = R"rawhtml(
 <!DOCTYPE html>
 <html lang="de">
@@ -5376,6 +5412,9 @@ void loop() {
     loopCounter = 0;
     lastLoopBenchTime = millis();
   }
+
+  // Periodic online firmware update check (once at boot, then every 10 min)
+  checkGithubUpdateAsync();
 
   // =====================================================================
   // ESP-NOW PAIRING TICK
