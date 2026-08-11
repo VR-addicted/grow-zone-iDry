@@ -21,7 +21,7 @@
 #include <WiFiClientSecure.h>
 
 // Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 26;
+const int localFirmwareVersion = 27;
 
 // Sensor Libraries
 #include <Adafruit_BME280.h>
@@ -2174,7 +2174,7 @@ void handlePortalRoot() {
                 <div class="card-title">Potentiometer</div>
                 <div class="value-row"><span>Sollwert Feuchte (A):</span><span class="val" id="poti-a">--</span></div>
                 <div class="value-row"><span>Gain Faktor (B):</span><span class="val" id="poti-b">--</span></div>
-                <div class="value-row"><span>Kalibrierungs-Offset (C):</span><span class="val" id="poti-c">--</span></div>
+                <div class="value-row"><span>Rotor-Offset (C):</span><span class="val" id="poti-c">--</span></div>
             </div>
             <div class="card">
                 <div class="card-title">Rotor & Servo</div>
@@ -2647,6 +2647,12 @@ void handlePortalRoot() {
             document.getElementById('chart-modal').style.display = 'flex';
             requestAnimationFrame(() => {
                 renderModalZoom();
+                setTimeout(() => {
+                    const canvas = document.getElementById('modal-canvas');
+                    if (canvas && canvas.parentElement) {
+                        canvas.parentElement.scrollLeft = canvas.parentElement.scrollWidth;
+                    }
+                }, 50);
             });
         }
 
