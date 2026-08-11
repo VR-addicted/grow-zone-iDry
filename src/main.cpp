@@ -21,7 +21,7 @@
 #include <WiFiClientSecure.h>
 
 // Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 22;
+const int localFirmwareVersion = 23;
 
 // Sensor Libraries
 #include <Adafruit_BME280.h>
@@ -201,9 +201,13 @@ unsigned long lastChannelHopTime = 0;
 char proposedLmk[33] = "";
 
 struct HistorySample {
+  float temp_0_min;
   float temp_0_max;
+  float hum_0_min;
   float hum_0_max;
+  float temp_1_min;
   float temp_1_max;
+  float hum_1_min;
   float hum_1_max;
   float lux_0_max;
   float lux_1_max;
@@ -225,9 +229,13 @@ int history24hCount = 0;
 int history24hHead = 0;
 
 // 1-minute bucket accumulators
+static float b1m_temp_0_min = NAN;
 static float b1m_temp_0_max = NAN;
+static float b1m_hum_0_min = NAN;
 static float b1m_hum_0_max = NAN;
+static float b1m_temp_1_min = NAN;
 static float b1m_temp_1_max = NAN;
+static float b1m_hum_1_min = NAN;
 static float b1m_hum_1_max = NAN;
 static float b1m_lux_0_max = 0.0f;
 static float b1m_lux_1_max = 0.0f;
@@ -238,9 +246,13 @@ static int8_t b1m_rssi_min = 0;
 static unsigned long last1mBucketTime = 0;
 
 // 5-minute bucket accumulators
+static float b5m_temp_0_min = NAN;
 static float b5m_temp_0_max = NAN;
+static float b5m_hum_0_min = NAN;
 static float b5m_hum_0_max = NAN;
+static float b5m_temp_1_min = NAN;
 static float b5m_temp_1_max = NAN;
+static float b5m_hum_1_min = NAN;
 static float b5m_hum_1_max = NAN;
 static float b5m_lux_0_max = 0.0f;
 static float b5m_lux_1_max = 0.0f;
@@ -1067,22 +1079,44 @@ int detectedLightSensors = 0;
 
 void updateHistoryAccumulators1s() {
   if (tempSensors[0].active && !isnan(tempSensors[0].temperature)) {
+    if (isnan(b1m_temp_0_min) || tempSensors[0].temperature < b1m_temp_0_min)
+      b1m_temp_0_min = tempSensors[0].temperature;
     if (isnan(b1m_temp_0_max) || tempSensors[0].temperature > b1m_temp_0_max)
       b1m_temp_0_max = tempSensors[0].temperature;
+
+    if (isnan(b1m_hum_0_min) || tempSensors[0].humidity < b1m_hum_0_min)
+      b1m_hum_0_min = tempSensors[0].humidity;
     if (isnan(b1m_hum_0_max) || tempSensors[0].humidity > b1m_hum_0_max)
       b1m_hum_0_max = tempSensors[0].humidity;
+
+    if (isnan(b5m_temp_0_min) || tempSensors[0].temperature < b5m_temp_0_min)
+      b5m_temp_0_min = tempSensors[0].temperature;
     if (isnan(b5m_temp_0_max) || tempSensors[0].temperature > b5m_temp_0_max)
       b5m_temp_0_max = tempSensors[0].temperature;
+
+    if (isnan(b5m_hum_0_min) || tempSensors[0].humidity < b5m_hum_0_min)
+      b5m_hum_0_min = tempSensors[0].humidity;
     if (isnan(b5m_hum_0_max) || tempSensors[0].humidity > b5m_hum_0_max)
       b5m_hum_0_max = tempSensors[0].humidity;
   }
   if (tempSensors[1].active && !isnan(tempSensors[1].temperature)) {
+    if (isnan(b1m_temp_1_min) || tempSensors[1].temperature < b1m_temp_1_min)
+      b1m_temp_1_min = tempSensors[1].temperature;
     if (isnan(b1m_temp_1_max) || tempSensors[1].temperature > b1m_temp_1_max)
       b1m_temp_1_max = tempSensors[1].temperature;
+
+    if (isnan(b1m_hum_1_min) || tempSensors[1].humidity < b1m_hum_1_min)
+      b1m_hum_1_min = tempSensors[1].humidity;
     if (isnan(b1m_hum_1_max) || tempSensors[1].humidity > b1m_hum_1_max)
       b1m_hum_1_max = tempSensors[1].humidity;
+
+    if (isnan(b5m_temp_1_min) || tempSensors[1].temperature < b5m_temp_1_min)
+      b5m_temp_1_min = tempSensors[1].temperature;
     if (isnan(b5m_temp_1_max) || tempSensors[1].temperature > b5m_temp_1_max)
       b5m_temp_1_max = tempSensors[1].temperature;
+
+    if (isnan(b5m_hum_1_min) || tempSensors[1].humidity < b5m_hum_1_min)
+      b5m_hum_1_min = tempSensors[1].humidity;
     if (isnan(b5m_hum_1_max) || tempSensors[1].humidity > b5m_hum_1_max)
       b5m_hum_1_max = tempSensors[1].humidity;
   }
@@ -1124,9 +1158,13 @@ void updateHistoryAccumulators1s() {
   } else if (millis() - last1mBucketTime >= 60000UL) {
     last1mBucketTime = millis();
     HistorySample s;
+    s.temp_0_min = b1m_temp_0_min;
     s.temp_0_max = b1m_temp_0_max;
+    s.hum_0_min = b1m_hum_0_min;
     s.hum_0_max = b1m_hum_0_max;
+    s.temp_1_min = b1m_temp_1_min;
     s.temp_1_max = b1m_temp_1_max;
+    s.hum_1_min = b1m_hum_1_min;
     s.hum_1_max = b1m_hum_1_max;
     s.lux_0_max = b1m_lux_0_max;
     s.lux_1_max = b1m_lux_1_max;
@@ -1140,9 +1178,13 @@ void updateHistoryAccumulators1s() {
     if (history60mCount < HIST_60M_SIZE)
       history60mCount++;
 
+    b1m_temp_0_min = NAN;
     b1m_temp_0_max = NAN;
+    b1m_hum_0_min = NAN;
     b1m_hum_0_max = NAN;
+    b1m_temp_1_min = NAN;
     b1m_temp_1_max = NAN;
+    b1m_hum_1_min = NAN;
     b1m_hum_1_max = NAN;
     b1m_lux_0_max = 0.0f;
     b1m_lux_1_max = 0.0f;
@@ -1158,9 +1200,13 @@ void updateHistoryAccumulators1s() {
   } else if (millis() - last5mBucketTime >= 300000UL) {
     last5mBucketTime = millis();
     HistorySample s;
+    s.temp_0_min = b5m_temp_0_min;
     s.temp_0_max = b5m_temp_0_max;
+    s.hum_0_min = b5m_hum_0_min;
     s.hum_0_max = b5m_hum_0_max;
+    s.temp_1_min = b5m_temp_1_min;
     s.temp_1_max = b5m_temp_1_max;
+    s.hum_1_min = b5m_hum_1_min;
     s.hum_1_max = b5m_hum_1_max;
     s.lux_0_max = b5m_lux_0_max;
     s.lux_1_max = b5m_lux_1_max;
@@ -1174,9 +1220,13 @@ void updateHistoryAccumulators1s() {
     if (history24hCount < HIST_24H_SIZE)
       history24hCount++;
 
+    b5m_temp_0_min = NAN;
     b5m_temp_0_max = NAN;
+    b5m_hum_0_min = NAN;
     b5m_hum_0_max = NAN;
+    b5m_temp_1_min = NAN;
     b5m_temp_1_max = NAN;
+    b5m_hum_1_min = NAN;
     b5m_hum_1_max = NAN;
     b5m_lux_0_max = 0.0f;
     b5m_lux_1_max = 0.0f;
@@ -1749,15 +1799,27 @@ void handleGetHistory() {
   for (int i = 0; i < history60mCount; i++) {
     int idx = (start60 + i) % HIST_60M_SIZE;
     JsonObject s = samples60m.add<JsonObject>();
+    s["t0_min"] = isnan(history60mBuffer[idx].temp_0_min)
+                      ? JsonVariant()
+                      : history60mBuffer[idx].temp_0_min;
     s["t0"] = isnan(history60mBuffer[idx].temp_0_max)
                   ? JsonVariant()
                   : history60mBuffer[idx].temp_0_max;
+    s["h0_min"] = isnan(history60mBuffer[idx].hum_0_min)
+                      ? JsonVariant()
+                      : history60mBuffer[idx].hum_0_min;
     s["h0"] = isnan(history60mBuffer[idx].hum_0_max)
                   ? JsonVariant()
                   : history60mBuffer[idx].hum_0_max;
+    s["t1_min"] = isnan(history60mBuffer[idx].temp_1_min)
+                      ? JsonVariant()
+                      : history60mBuffer[idx].temp_1_min;
     s["t1"] = isnan(history60mBuffer[idx].temp_1_max)
                   ? JsonVariant()
                   : history60mBuffer[idx].temp_1_max;
+    s["h1_min"] = isnan(history60mBuffer[idx].hum_1_min)
+                      ? JsonVariant()
+                      : history60mBuffer[idx].hum_1_min;
     s["h1"] = isnan(history60mBuffer[idx].hum_1_max)
                   ? JsonVariant()
                   : history60mBuffer[idx].hum_1_max;
@@ -1770,18 +1832,34 @@ void handleGetHistory() {
   }
   // Active live 1-minute bucket
   JsonObject live1m = samples60m.add<JsonObject>();
+  live1m["t0_min"] = isnan(b1m_temp_0_min) ? (isnan(tempSensors[0].temperature)
+                                                  ? JsonVariant()
+                                                  : tempSensors[0].temperature)
+                                           : b1m_temp_0_min;
   live1m["t0"] = isnan(b1m_temp_0_max) ? (isnan(tempSensors[0].temperature)
                                               ? JsonVariant()
                                               : tempSensors[0].temperature)
                                        : b1m_temp_0_max;
+  live1m["h0_min"] = isnan(b1m_hum_0_min) ? (isnan(tempSensors[0].humidity)
+                                                 ? JsonVariant()
+                                                 : tempSensors[0].humidity)
+                                          : b1m_hum_0_min;
   live1m["h0"] = isnan(b1m_hum_0_max) ? (isnan(tempSensors[0].humidity)
                                              ? JsonVariant()
                                              : tempSensors[0].humidity)
                                       : b1m_hum_0_max;
+  live1m["t1_min"] = isnan(b1m_temp_1_min) ? (isnan(tempSensors[1].temperature)
+                                                  ? JsonVariant()
+                                                  : tempSensors[1].temperature)
+                                           : b1m_temp_1_min;
   live1m["t1"] = isnan(b1m_temp_1_max) ? (isnan(tempSensors[1].temperature)
                                               ? JsonVariant()
                                               : tempSensors[1].temperature)
                                        : b1m_temp_1_max;
+  live1m["h1_min"] = isnan(b1m_hum_1_min) ? (isnan(tempSensors[1].humidity)
+                                                 ? JsonVariant()
+                                                 : tempSensors[1].humidity)
+                                          : b1m_hum_1_min;
   live1m["h1"] = isnan(b1m_hum_1_max) ? (isnan(tempSensors[1].humidity)
                                              ? JsonVariant()
                                              : tempSensors[1].humidity)
@@ -1801,15 +1879,27 @@ void handleGetHistory() {
   for (int i = 0; i < history24hCount; i++) {
     int idx = (start24 + i) % HIST_24H_SIZE;
     JsonObject s = samples24h.add<JsonObject>();
+    s["t0_min"] = isnan(history24hBuffer[idx].temp_0_min)
+                      ? JsonVariant()
+                      : history24hBuffer[idx].temp_0_min;
     s["t0"] = isnan(history24hBuffer[idx].temp_0_max)
                   ? JsonVariant()
                   : history24hBuffer[idx].temp_0_max;
+    s["h0_min"] = isnan(history24hBuffer[idx].hum_0_min)
+                      ? JsonVariant()
+                      : history24hBuffer[idx].hum_0_min;
     s["h0"] = isnan(history24hBuffer[idx].hum_0_max)
                   ? JsonVariant()
                   : history24hBuffer[idx].hum_0_max;
+    s["t1_min"] = isnan(history24hBuffer[idx].temp_1_min)
+                      ? JsonVariant()
+                      : history24hBuffer[idx].temp_1_min;
     s["t1"] = isnan(history24hBuffer[idx].temp_1_max)
                   ? JsonVariant()
                   : history24hBuffer[idx].temp_1_max;
+    s["h1_min"] = isnan(history24hBuffer[idx].hum_1_min)
+                      ? JsonVariant()
+                      : history24hBuffer[idx].hum_1_min;
     s["h1"] = isnan(history24hBuffer[idx].hum_1_max)
                   ? JsonVariant()
                   : history24hBuffer[idx].hum_1_max;
@@ -1822,18 +1912,34 @@ void handleGetHistory() {
   }
   // Active live 5-minute bucket
   JsonObject live5m = samples24h.add<JsonObject>();
+  live5m["t0_min"] = isnan(b5m_temp_0_min) ? (isnan(tempSensors[0].temperature)
+                                                  ? JsonVariant()
+                                                  : tempSensors[0].temperature)
+                                           : b5m_temp_0_min;
   live5m["t0"] = isnan(b5m_temp_0_max) ? (isnan(tempSensors[0].temperature)
                                               ? JsonVariant()
                                               : tempSensors[0].temperature)
                                        : b5m_temp_0_max;
+  live5m["h0_min"] = isnan(b5m_hum_0_min) ? (isnan(tempSensors[0].humidity)
+                                                 ? JsonVariant()
+                                                 : tempSensors[0].humidity)
+                                          : b5m_hum_0_min;
   live5m["h0"] = isnan(b5m_hum_0_max) ? (isnan(tempSensors[0].humidity)
                                              ? JsonVariant()
                                              : tempSensors[0].humidity)
                                       : b5m_hum_0_max;
+  live5m["t1_min"] = isnan(b5m_temp_1_min) ? (isnan(tempSensors[1].temperature)
+                                                  ? JsonVariant()
+                                                  : tempSensors[1].temperature)
+                                           : b5m_temp_1_min;
   live5m["t1"] = isnan(b5m_temp_1_max) ? (isnan(tempSensors[1].temperature)
                                               ? JsonVariant()
                                               : tempSensors[1].temperature)
                                        : b5m_temp_1_max;
+  live5m["h1_min"] = isnan(b5m_hum_1_min) ? (isnan(tempSensors[1].humidity)
+                                                 ? JsonVariant()
+                                                 : tempSensors[1].humidity)
+                                          : b5m_hum_1_min;
   live5m["h1"] = isnan(b5m_hum_1_max) ? (isnan(tempSensors[1].humidity)
                                              ? JsonVariant()
                                              : tempSensors[1].humidity)
@@ -2438,30 +2544,54 @@ void handlePortalRoot() {
             const offsetIndex = count - data60m.length;
 
             for (let i = 0; i < data60m.length; i++) {
-                let val = 0;
                 const d = data60m[i];
-                if (type === 'temp') val = (index === 0 ? d.t0 : d.t1);
-                else if (type === 'hum') val = (index === 0 ? d.h0 : d.h1);
-                else if (type === 'lux') val = (index === 0 ? d.l0 : d.l1);
-                else if (type === 'rotor') val = d.r;
-                else if (type === 'espnow') val = d.el;
-                else if (type === 'mqtt') val = d.ml;
+                let valMax = 0, valMin = 0;
+
+                if (type === 'temp') {
+                    valMax = (index === 0 ? d.t0 : d.t1);
+                    valMin = (index === 0 ? d.t0_min : d.t1_min);
+                } else if (type === 'hum') {
+                    valMax = (index === 0 ? d.h0 : d.h1);
+                    valMin = (index === 0 ? d.h0_min : d.h1_min);
+                } else if (type === 'lux') {
+                    valMax = (index === 0 ? d.l0 : d.l1);
+                } else if (type === 'rotor') valMax = d.r;
+                else if (type === 'espnow') valMax = d.el;
+                else if (type === 'mqtt') valMax = d.ml;
                 else if (type === 'rssi') {
                     let r = (d.rssi !== undefined && d.rssi !== null && d.rssi !== 0) ? d.rssi : -100;
-                    val = Math.round((r + 100) * 10 / 7);
+                    valMax = Math.round((r + 100) * 10 / 7);
                 }
 
-                if (val === null || val === undefined || isNaN(val)) continue;
-                if (val < minY) val = minY;
-                if (val > maxY) val = maxY;
+                if (valMax === null || valMax === undefined || isNaN(valMax)) continue;
+                if (valMin === null || valMin === undefined || isNaN(valMin)) valMin = valMax;
 
-                const valH = ((val - minY) / (maxY - minY)) * chartH;
+                if (valMax < minY) valMax = minY; if (valMax > maxY) valMax = maxY;
+                if (valMin < minY) valMin = minY; if (valMin > maxY) valMin = maxY;
+
                 const candleIndex = offsetIndex + i;
                 const x = marginL + candleIndex * candleW;
-                const y = chartH - valH;
 
-                ctx.fillStyle = (type === 'espnow' || type === 'mqtt') ? '#f87171' : '#38bdf8';
-                ctx.fillRect(x + 1, y, Math.max(1, candleW - 2), valH);
+                if (type === 'temp' || type === 'hum') {
+                    const minH = ((valMin - minY) / (maxY - minY)) * chartH;
+                    const maxH = ((valMax - minY) / (maxY - minY)) * chartH;
+                    const yBase = chartH - minH;
+                    const yTop = chartH - maxH;
+
+                    // Base light-blue candle up to min value
+                    ctx.fillStyle = '#38bdf8';
+                    ctx.fillRect(x + 1, yBase, Math.max(1, candleW - 2), minH);
+
+                    // Yellow spike candle top segment (delta max-min within minute)
+                    const spikeH = Math.max(2 * dpr, yBase - yTop);
+                    ctx.fillStyle = '#facc15';
+                    ctx.fillRect(x + 1, yTop, Math.max(1, candleW - 2), spikeH);
+                } else {
+                    const valH = ((valMax - minY) / (maxY - minY)) * chartH;
+                    const y = chartH - valH;
+                    ctx.fillStyle = (type === 'espnow' || type === 'mqtt') ? '#f87171' : '#38bdf8';
+                    ctx.fillRect(x + 1, y, Math.max(1, candleW - 2), valH);
+                }
             }
 
             if (greenLineVal !== null) {
@@ -2556,25 +2686,54 @@ void handlePortalRoot() {
             const offsetIndex = totalSamples - history24h.length;
 
             for (let i = 0; i < history24h.length; i++) {
-                let val = 0;
                 const d = history24h[i];
-                if (type === 'temp') val = (index === 0 ? d.t0 : d.t1);
-                else if (type === 'hum') val = (index === 0 ? d.h0 : d.h1);
-                else if (type === 'lux') val = (index === 0 ? d.l0 : d.l1);
-                else if (type === 'rotor') val = d.r;
-                else if (type === 'espnow') val = d.el;
-                else if (type === 'mqtt') val = d.ml;
-                else if (type === 'rssi') { let r = (d.rssi !== undefined && d.rssi !== null && d.rssi !== 0) ? d.rssi : -100; val = Math.round((r + 100) * 10 / 7); }
+                let valMax = 0, valMin = 0;
 
-                if (val === null || val === undefined || isNaN(val)) continue;
-                if (val < minY) val = minY; if (val > maxY) val = maxY;
-                const valH = ((val - minY) / (maxY - minY)) * chartH;
+                if (type === 'temp') {
+                    valMax = (index === 0 ? d.t0 : d.t1);
+                    valMin = (index === 0 ? d.t0_min : d.t1_min);
+                } else if (type === 'hum') {
+                    valMax = (index === 0 ? d.h0 : d.h1);
+                    valMin = (index === 0 ? d.h0_min : d.h1_min);
+                } else if (type === 'lux') {
+                    valMax = (index === 0 ? d.l0 : d.l1);
+                } else if (type === 'rotor') valMax = d.r;
+                else if (type === 'espnow') valMax = d.el;
+                else if (type === 'mqtt') valMax = d.ml;
+                else if (type === 'rssi') {
+                    let r = (d.rssi !== undefined && d.rssi !== null && d.rssi !== 0) ? d.rssi : -100;
+                    valMax = Math.round((r + 100) * 10 / 7);
+                }
+
+                if (valMax === null || valMax === undefined || isNaN(valMax)) continue;
+                if (valMin === null || valMin === undefined || isNaN(valMin)) valMin = valMax;
+
+                if (valMax < minY) valMax = minY; if (valMax > maxY) valMax = maxY;
+                if (valMin < minY) valMin = minY; if (valMin > maxY) valMin = maxY;
+
                 const candleIndex = offsetIndex + i;
                 const x = marginL + candleIndex * candleW;
-                const y = chartH - valH;
 
-                ctx.fillStyle = (type === 'espnow' || type === 'mqtt') ? '#ef4444' : '#38bdf8';
-                ctx.fillRect(x + 1, y, Math.max(2, candleW - 2), valH);
+                if (type === 'temp' || type === 'hum') {
+                    const minH = ((valMin - minY) / (maxY - minY)) * chartH;
+                    const maxH = ((valMax - minY) / (maxY - minY)) * chartH;
+                    const yBase = chartH - minH;
+                    const yTop = chartH - maxH;
+
+                    // Base light-blue candle body up to min value
+                    ctx.fillStyle = '#38bdf8';
+                    ctx.fillRect(x + 1, yBase, Math.max(2, candleW - 2), minH);
+
+                    // Yellow spike top segment (delta max-min within 5-min bucket)
+                    const spikeH = Math.max(2 * dpr, yBase - yTop);
+                    ctx.fillStyle = '#facc15';
+                    ctx.fillRect(x + 1, yTop, Math.max(2, candleW - 2), spikeH);
+                } else {
+                    const valH = ((valMax - minY) / (maxY - minY)) * chartH;
+                    const y = chartH - valH;
+                    ctx.fillStyle = (type === 'espnow' || type === 'mqtt') ? '#ef4444' : '#38bdf8';
+                    ctx.fillRect(x + 1, y, Math.max(2, candleW - 2), valH);
+                }
             }
 
             if (greenLineVal !== null) {
