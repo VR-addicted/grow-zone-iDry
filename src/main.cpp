@@ -21,7 +21,7 @@
 #include <WiFiClientSecure.h>
 
 // Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 30;
+const int localFirmwareVersion = 31;
 
 // Sensor Libraries
 #include <Adafruit_BME280.h>
@@ -1987,9 +1987,16 @@ bool checkGatewayReachable() {
   return false;
 }
 
-// Config page when in AP mode, Dashboard when in Station mode
 void handlePortalRoot() {
   if (WiFi.status() == WL_CONNECTED && !portalActive) {
+    String pageTitle = String(sysConfig.mqtt_device_name);
+    if (sysConfig.espnow_role == 1)
+      pageTitle += " Master";
+    else if (sysConfig.espnow_role == 2)
+      pageTitle += " Slave";
+    else
+      pageTitle += " Dashboard";
+
     // Show Real-time Sensor Dashboard
     String html =
         R"rawhtml(
@@ -1998,7 +2005,8 @@ void handlePortalRoot() {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>IDRY-26 Dashboard</title>
+    <title>)rawhtml" +
+        pageTitle + R"rawhtml(</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         body {
@@ -2344,16 +2352,21 @@ void handlePortalRoot() {
                 })
                 .then(data => {
                     let titleText = data.device_name;
+                    let docTitle = data.device_name;
                     if (data.espnow_role === 1) {
                         titleText += " [MASTER]";
+                        docTitle += " Master";
                         document.body.style.background = "linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%)";
                     } else if (data.espnow_role === 2) {
                         titleText += " [SLAVE]";
+                        docTitle += " Slave";
                         document.body.style.background = "linear-gradient(135deg, #1e1b1b 0%, #450a0a 100%)";
                     } else {
+                        docTitle += " Dashboard";
                         document.body.style.background = "linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%)";
                     }
                     document.getElementById('device-title').innerText = titleText;
+                    document.title = docTitle;
                     document.getElementById('sys-ip').innerText = data.ip_address;
                     document.getElementById('sys-ip').style.color = data.ip_address.startsWith("try") ? "#f87171" : "#38bdf8";
                     document.getElementById('sys-mode').innerText = data.mode;
