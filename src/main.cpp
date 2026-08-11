@@ -21,7 +21,7 @@
 #include <WiFiClientSecure.h>
 
 // Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 17;
+const int localFirmwareVersion = 18;
 
 // Sensor Libraries
 #include <Adafruit_BME280.h>
@@ -1050,13 +1050,15 @@ int detectedLightSensors = 0;
 
 void updateHistoryAccumulators1s() {
   if (tempSensors[0].active && !isnan(tempSensors[0].temperature)) {
-    if (isnan(bucket_temp_0_max) || tempSensors[0].temperature > bucket_temp_0_max)
+    if (isnan(bucket_temp_0_max) ||
+        tempSensors[0].temperature > bucket_temp_0_max)
       bucket_temp_0_max = tempSensors[0].temperature;
     if (isnan(bucket_hum_0_max) || tempSensors[0].humidity > bucket_hum_0_max)
       bucket_hum_0_max = tempSensors[0].humidity;
   }
   if (tempSensors[1].active && !isnan(tempSensors[1].temperature)) {
-    if (isnan(bucket_temp_1_max) || tempSensors[1].temperature > bucket_temp_1_max)
+    if (isnan(bucket_temp_1_max) ||
+        tempSensors[1].temperature > bucket_temp_1_max)
       bucket_temp_1_max = tempSensors[1].temperature;
     if (isnan(bucket_hum_1_max) || tempSensors[1].humidity > bucket_hum_1_max)
       bucket_hum_1_max = tempSensors[1].humidity;
@@ -1680,29 +1682,47 @@ void handleGetHistory() {
   for (int i = 0; i < historyCount; i++) {
     int idx = (startIdx + i) % HISTORY_SIZE;
     JsonObject s = samples.add<JsonObject>();
-    s["t0"] = isnan(historyBuffer[idx].temp_0_max) ? JsonVariant()
-                                                   : historyBuffer[idx].temp_0_max;
-    s["h0"] = isnan(historyBuffer[idx].hum_0_max) ? JsonVariant()
-                                                  : historyBuffer[idx].hum_0_max;
-    s["t1"] = isnan(historyBuffer[idx].temp_1_max) ? JsonVariant()
-                                                   : historyBuffer[idx].temp_1_max;
-    s["h1"] = isnan(historyBuffer[idx].hum_1_max) ? JsonVariant()
-                                                  : historyBuffer[idx].hum_1_max;
+    s["t0"] = isnan(historyBuffer[idx].temp_0_max)
+                  ? JsonVariant()
+                  : historyBuffer[idx].temp_0_max;
+    s["h0"] = isnan(historyBuffer[idx].hum_0_max)
+                  ? JsonVariant()
+                  : historyBuffer[idx].hum_0_max;
+    s["t1"] = isnan(historyBuffer[idx].temp_1_max)
+                  ? JsonVariant()
+                  : historyBuffer[idx].temp_1_max;
+    s["h1"] = isnan(historyBuffer[idx].hum_1_max)
+                  ? JsonVariant()
+                  : historyBuffer[idx].hum_1_max;
     s["r"] = historyBuffer[idx].rotor_max;
     s["el"] = historyBuffer[idx].espnow_loss_sec;
     s["ml"] = historyBuffer[idx].mqtt_loss_sec;
     s["rssi"] = historyBuffer[idx].rssi_min;
   }
 
-  // ALWAYS append the currently active in-progress bucket as the live final sample!
+  // ALWAYS append the currently active in-progress bucket as the live final
+  // sample!
   JsonObject live = samples.add<JsonObject>();
-  live["t0"] = isnan(bucket_temp_0_max) ? (isnan(tempSensors[0].temperature) ? JsonVariant() : tempSensors[0].temperature) : bucket_temp_0_max;
-  live["h0"] = isnan(bucket_hum_0_max) ? (isnan(tempSensors[0].humidity) ? JsonVariant() : tempSensors[0].humidity) : bucket_hum_0_max;
-  live["t1"] = isnan(bucket_temp_1_max) ? (isnan(tempSensors[1].temperature) ? JsonVariant() : tempSensors[1].temperature) : bucket_temp_1_max;
-  live["h1"] = isnan(bucket_hum_1_max) ? (isnan(tempSensors[1].humidity) ? JsonVariant() : tempSensors[1].humidity) : bucket_hum_1_max;
+  live["t0"] = isnan(bucket_temp_0_max) ? (isnan(tempSensors[0].temperature)
+                                               ? JsonVariant()
+                                               : tempSensors[0].temperature)
+                                        : bucket_temp_0_max;
+  live["h0"] = isnan(bucket_hum_0_max)
+                   ? (isnan(tempSensors[0].humidity) ? JsonVariant()
+                                                     : tempSensors[0].humidity)
+                   : bucket_hum_0_max;
+  live["t1"] = isnan(bucket_temp_1_max) ? (isnan(tempSensors[1].temperature)
+                                               ? JsonVariant()
+                                               : tempSensors[1].temperature)
+                                        : bucket_temp_1_max;
+  live["h1"] = isnan(bucket_hum_1_max)
+                   ? (isnan(tempSensors[1].humidity) ? JsonVariant()
+                                                     : tempSensors[1].humidity)
+                   : bucket_hum_1_max;
   live["l0"] = bucket_lux_0_max;
   live["l1"] = bucket_lux_1_max;
-  live["r"] = (rotorPosition > bucket_rotor_max) ? rotorPosition : bucket_rotor_max;
+  live["r"] =
+      (rotorPosition > bucket_rotor_max) ? rotorPosition : bucket_rotor_max;
   live["el"] = bucket_espnow_loss_sec;
   live["ml"] = bucket_mqtt_loss_sec;
   live["rssi"] = bucket_rssi_min;
@@ -1745,7 +1765,8 @@ bool checkGatewayReachable() {
 void handlePortalRoot() {
   if (WiFi.status() == WL_CONNECTED && !portalActive) {
     // Show Real-time Sensor Dashboard
-    String html = R"rawhtml(
+    String html =
+        R"rawhtml(
 <!DOCTYPE html>
 <html lang="de">
 <head>
@@ -1991,7 +2012,9 @@ void handlePortalRoot() {
             </details>
         </div>
         <div class="footer" style="display: flex; justify-content: space-between; align-items: center; margin-top: 25px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.05);">
-            <span id="footer-text">IDRY26 Live Monitor v)rawhtml" + String("1.") + String(localFirmwareVersion) + R"rawhtml( - (bench: <span id="footer-bench" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> loops/s)</span>
+            <span id="footer-text">IDRY26 Live Monitor v)rawhtml" +
+        String("1.") + String(localFirmwareVersion) +
+        R"rawhtml( - (bench: <span id="footer-bench" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> loops/s)</span>
             <a href="/settings" style="color: #818cf8; text-decoration: none; display: inline-flex; align-items: center; gap: 5px; font-weight: 600; padding: 6px 12px; background: rgba(129, 140, 248, 0.1); border-radius: 8px; border: 1px solid rgba(129, 140, 248, 0.2); transition: all 0.2s;">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
                 Einstellungen
@@ -3020,7 +3043,8 @@ void handleSettingsPage() {
                     <div class="slider-container">
                         <input type="range" name="wlan_time_trap" min="0" max="330" class="slider" id="wlan-time-trap-slider" value=")rawhtml";
   html += String(sysConfig.wlan_time_trap);
-  html += R"rawhtml(" required>
+  html +=
+      R"rawhtml(" required>
                     </div>
                 </div>
             </div>
@@ -3078,7 +3102,9 @@ void handleSettingsPage() {
             </form>
         </div>
 
-        <div class="footer" id="footer-text">IDRY26 Live Monitor v)rawhtml" + String("1.") + String(localFirmwareVersion) + R"rawhtml( - (bench: <span id="footer-bench-settings" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> loops/s)</div>
+        <div class="footer" id="footer-text">IDRY26 Live Monitor v)rawhtml" +
+      String("1.") + String(localFirmwareVersion) +
+      R"rawhtml( - (bench: <span id="footer-bench-settings" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> loops/s)</div>
     </div>
 
     <script>
@@ -4804,6 +4830,7 @@ void setup() {
       // Web Server Init (Real-time monitor)
       server.on("/", handlePortalRoot);
       server.on("/api/data", handleGetData);
+      server.on("/api/history", handleGetHistory);
       server.on("/settings", handleSettingsPage);
       server.on("/settings/save", handleSettingsSave);
       server.on("/settings/reset", handleSettingsReset);
