@@ -21,7 +21,7 @@
 #include <WiFiClientSecure.h>
 
 // Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 15;
+const int localFirmwareVersion = 16;
 
 // Sensor Libraries
 #include <Adafruit_BME280.h>
@@ -216,7 +216,7 @@ struct HistorySample {
   int8_t rssi_min;
 };
 
-const int HISTORY_SIZE = 36; // 36 samples x 5 minutes = 3 hours
+const int HISTORY_SIZE = 288; // 288 samples x 5 minutes = 24 hours
 HistorySample historyBuffer[HISTORY_SIZE];
 int historyCount = 0;
 int historyHead = 0;
@@ -1084,7 +1084,9 @@ void updateHistoryAccumulators1s() {
     bucket_rssi_min = (int8_t)currentRssi;
   }
 
-  if (millis() - lastHistoryBucketTime >= 300000UL || lastHistoryBucketTime == 0) {
+  if (lastHistoryBucketTime == 0) {
+    lastHistoryBucketTime = millis();
+  } else if (millis() - lastHistoryBucketTime >= 300000UL) {
     lastHistoryBucketTime = millis();
 
     HistorySample sample;
@@ -1688,11 +1690,21 @@ void handleGetHistory() {
                                                   : historyBuffer[idx].hum_1_max;
     s["l0"] = historyBuffer[idx].lux_0_max;
     s["l1"] = historyBuffer[idx].lux_1_max;
-    s["r"] = historyBuffer[idx].rotor_max;
-    s["el"] = historyBuffer[idx].espnow_loss_sec;
-    s["ml"] = historyBuffer[idx].mqtt_loss_sec;
     s["rssi"] = historyBuffer[idx].rssi_min;
   }
+
+  // ALWAYS append the currently active in-progress bucket as the live final sample!
+  JsonObject live = samples.add<JsonObject>();
+  live["t0"] = isnan(bucket_temp_0_max) ? (isnan(tempSensors[0].temperature) ? JsonVariant() : tempSensors[0].temperature) : bucket_temp_0_max;
+  live["h0"] = isnan(bucket_hum_0_max) ? (isnan(tempSensors[0].humidity) ? JsonVariant() : tempSensors[0].humidity) : bucket_hum_0_max;
+  live["t1"] = isnan(bucket_temp_1_max) ? (isnan(tempSensors[1].temperature) ? JsonVariant() : tempSensors[1].temperature) : bucket_temp_1_max;
+  live["h1"] = isnan(bucket_hum_1_max) ? (isnan(tempSensors[1].humidity) ? JsonVariant() : tempSensors[1].humidity) : bucket_hum_1_max;
+  live["l0"] = bucket_lux_0_max;
+  live["l1"] = bucket_lux_1_max;
+  live["r"] = (rotorPosition > bucket_rotor_max) ? rotorPosition : bucket_rotor_max;
+  live["el"] = bucket_espnow_loss_sec;
+  live["ml"] = bucket_mqtt_loss_sec;
+  live["rssi"] = bucket_rssi_min;
 
   String jsonResponse;
   serializeJson(doc, jsonResponse);
@@ -1857,9 +1869,15 @@ void handlePortalRoot() {
                 <div class="value-row" id="dp-row-0"><span>Taupunkt:</span><span class="val" id="dp-0">--</span></div>
                 <div class="value-row" id="press-row-0"><span>Luftdruck:</span><span class="val" id="press-0">--</span></div>
                 <details open class="hist-toggle" id="details-temp-0" ontoggle="renderAllCharts()">
-                    <summary>3h Verlauf (Temp / Feuchte)</summary>
-                    <div class="spark-box" onclick="openChartZoom('temp_0', 'Sensor 1 Verlauf')">
-                        <canvas id="cv-sensor-0"></canvas>
+                    <summary>3h Verlauf (Temperatur)</summary>
+                    <div class="spark-box" onclick="openChartZoom('temp_0', 'Sensor 1 Temperatur')">
+                        <canvas id="cv-temp-0"></canvas>
+                    </div>
+                </details>
+                <details open class="hist-toggle" id="details-hum-0" ontoggle="renderAllCharts()">
+                    <summary>3h Verlauf (Luftfeuchtigkeit)</summary>
+                    <div class="spark-box" onclick="openChartZoom('hum_0', 'Sensor 1 Luftfeuchtigkeit')">
+                        <canvas id="cv-hum-0"></canvas>
                     </div>
                 </details>
             </div>
@@ -1870,9 +1888,15 @@ void handlePortalRoot() {
                 <div class="value-row" id="dp-row-1"><span>Taupunkt:</span><span class="val" id="dp-1">--</span></div>
                 <div class="value-row" id="press-row-1"><span>Luftdruck:</span><span class="val" id="press-1">--</span></div>
                 <details open class="hist-toggle" id="details-temp-1" ontoggle="renderAllCharts()">
-                    <summary>3h Verlauf (Temp / Feuchte)</summary>
-                    <div class="spark-box" onclick="openChartZoom('temp_1', 'Sensor 2 Verlauf')">
-                        <canvas id="cv-sensor-1"></canvas>
+                    <summary>3h Verlauf (Temperatur)</summary>
+                    <div class="spark-box" onclick="openChartZoom('temp_1', 'Sensor 2 Temperatur')">
+                        <canvas id="cv-temp-1"></canvas>
+                    </div>
+                </details>
+                <details open class="hist-toggle" id="details-hum-1" ontoggle="renderAllCharts()">
+                    <summary>3h Verlauf (Luftfeuchtigkeit)</summary>
+                    <div class="spark-box" onclick="openChartZoom('hum_1', 'Sensor 2 Luftfeuchtigkeit')">
+                        <canvas id="cv-hum-1"></canvas>
                     </div>
                 </details>
             </div>
@@ -2196,8 +2220,10 @@ void handlePortalRoot() {
         }
 
         function renderAllCharts() {
-            renderCardChart('details-temp-0', 'cv-sensor-0', 'temp', 0);
-            renderCardChart('details-temp-1', 'cv-sensor-1', 'temp', 1);
+            renderCardChart('details-temp-0', 'cv-temp-0', 'temp', 0);
+            renderCardChart('details-hum-0', 'cv-hum-0', 'hum', 0);
+            renderCardChart('details-temp-1', 'cv-temp-1', 'temp', 1);
+            renderCardChart('details-hum-1', 'cv-hum-1', 'hum', 1);
             renderCardChart('details-lux-0', 'cv-lux-0', 'lux', 0);
             renderCardChart('details-lux-1', 'cv-lux-1', 'lux', 1);
             renderCardChart('details-rotor', 'cv-rotor', 'rotor');
@@ -2213,13 +2239,19 @@ void handlePortalRoot() {
             const canvas = document.getElementById(canvasId);
             if (!canvas) return;
 
+            const boxW = canvas.offsetWidth || (canvas.parentElement ? canvas.parentElement.offsetWidth : 250);
+            const boxH = canvas.offsetHeight || 50;
+            if (boxW < 10) return;
+
             const ctx = canvas.getContext('2d');
             const dpr = window.devicePixelRatio || 1;
-            const w = canvas.width = canvas.offsetWidth * dpr;
-            const h = canvas.height = canvas.offsetHeight * dpr;
+            const w = canvas.width = boxW * dpr;
+            const h = canvas.height = boxH * dpr;
 
             ctx.clearRect(0, 0, w, h);
             if (!historyData || historyData.length === 0) return;
+
+            const data3h = historyData.slice(-36);
 
             let minY = 0, maxY = 100, midY = 50;
             let labelMax = "100", labelMid = "50", labelMin = "0";
@@ -2245,24 +2277,24 @@ void handlePortalRoot() {
             }
 
             ctx.fillStyle = '#64748b';
-            ctx.font = `${10 * dpr}px monospace`;
+            ctx.font = `${9 * dpr}px monospace`;
             ctx.textBaseline = 'top';
-            ctx.fillText(labelMax, 4 * dpr, 2 * dpr);
+            ctx.fillText(labelMax, 2 * dpr, 2 * dpr);
             ctx.textBaseline = 'middle';
-            ctx.fillText(labelMid, 4 * dpr, h / 2);
+            ctx.fillText(labelMid, 2 * dpr, h / 2);
             ctx.textBaseline = 'bottom';
-            ctx.fillText(labelMin, 4 * dpr, h - 8 * dpr);
+            ctx.fillText(labelMin, 2 * dpr, h - 6 * dpr);
 
-            const marginL = 32 * dpr;
+            const marginL = 28 * dpr;
             const chartW = w - marginL;
-            const chartH = h - 8 * dpr;
+            const chartH = h - 6 * dpr;
 
             const count = 36;
             const candleW = chartW / count;
 
-            for (let i = 0; i < historyData.length; i++) {
+            for (let i = 0; i < data3h.length; i++) {
                 let val = 0;
-                const d = historyData[i];
+                const d = data3h[i];
                 if (type === 'temp') val = (index === 0 ? d.t0 : d.t1);
                 else if (type === 'hum') val = (index === 0 ? d.h0 : d.h1);
                 else if (type === 'lux') val = (index === 0 ? d.l0 : d.l1);
@@ -2290,7 +2322,7 @@ void handlePortalRoot() {
                 const greenY = chartH - ((greenLineVal - minY) / (maxY - minY)) * chartH;
                 ctx.strokeStyle = '#22c55e';
                 ctx.lineWidth = 1.5 * dpr;
-                ctx.setLineDash([4 * dpr, 4 * dpr]);
+                ctx.setLineDash([3 * dpr, 3 * dpr]);
                 ctx.beginPath();
                 ctx.moveTo(marginL, greenY);
                 ctx.lineTo(w, greenY);
@@ -2321,9 +2353,11 @@ void handlePortalRoot() {
         function openChartZoom(type, title) {
             currentZoomType = type;
             currentZoomTitle = title;
-            document.getElementById('modal-title').innerText = title + " (3h Zoom)";
+            document.getElementById('modal-title').innerText = title + " (24h Zoom)";
             document.getElementById('chart-modal').style.display = 'flex';
-            renderModalZoom();
+            requestAnimationFrame(() => {
+                renderModalZoom();
+            });
         }
 
         function closeChartModal() {
@@ -2333,34 +2367,46 @@ void handlePortalRoot() {
         function renderModalZoom() {
             const canvas = document.getElementById('modal-canvas');
             if (!canvas) return;
+
             const ctx = canvas.getContext('2d');
             const dpr = window.devicePixelRatio || 1;
-            const w = canvas.width = canvas.offsetWidth * dpr;
-            const h = canvas.height = canvas.offsetHeight * dpr;
+            const container = canvas.parentElement;
+
+            const totalSamples = Math.max(36, historyData.length);
+            const containerWidth = container.offsetWidth || 600;
+            const canvasW = Math.max(containerWidth, totalSamples * 5);
+            const canvasH = 200;
+
+            const w = canvas.width = canvasW * dpr;
+            const h = canvas.height = canvasH * dpr;
+            canvas.style.width = canvasW + "px";
+            canvas.style.height = canvasH + "px";
 
             ctx.clearRect(0, 0, w, h);
             if (!historyData || historyData.length === 0) return;
 
             let type = currentZoomType, index = 0;
             if (type.startsWith('temp_')) { index = parseInt(type.split('_')[1]); type = 'temp'; }
+            if (type.startsWith('hum_')) { index = parseInt(type.split('_')[1]); type = 'hum'; }
             if (type.startsWith('lux_')) { index = parseInt(type.split('_')[1]); type = 'lux'; }
 
             let minY = 0, maxY = 100, labelMax = "100", labelMid = "50", labelMin = "0", greenLineVal = null;
             if (type === 'temp') { maxY = 50; labelMax = "50"; labelMid = "25"; labelMin = "0"; greenLineVal = 25; }
+            else if (type === 'hum') { maxY = 100; labelMax = "100"; labelMid = "50"; labelMin = "0"; greenLineVal = 50; }
             else if (type === 'lux') { maxY = 1000; labelMax = "1000"; labelMid = "500"; labelMin = "0"; }
+            else if (type === 'rotor' || type === 'rssi') { maxY = 100; labelMax = "100"; labelMid = "50"; labelMin = "0"; }
             else if (type === 'espnow' || type === 'mqtt') { maxY = 49; labelMax = "49"; labelMid = "25"; labelMin = "0"; }
 
             ctx.fillStyle = '#94a3b8';
-            ctx.font = `${12 * dpr}px monospace`;
-            ctx.textBaseline = 'top'; ctx.fillText(labelMax, 5 * dpr, 5 * dpr);
-            ctx.textBaseline = 'middle'; ctx.fillText(labelMid, 5 * dpr, h / 2);
-            ctx.textBaseline = 'bottom'; ctx.fillText(labelMin, 5 * dpr, h - 10 * dpr);
+            ctx.font = `${11 * dpr}px monospace`;
+            ctx.textBaseline = 'top'; ctx.fillText(labelMax, 6 * dpr, 6 * dpr);
+            ctx.textBaseline = 'middle'; ctx.fillText(labelMid, 6 * dpr, h / 2);
+            ctx.textBaseline = 'bottom'; ctx.fillText(labelMin, 6 * dpr, h - 12 * dpr);
 
-            const marginL = 45 * dpr;
+            const marginL = 40 * dpr;
             const chartW = w - marginL;
             const chartH = h - 15 * dpr;
-            const count = 36;
-            const candleW = chartW / count;
+            const candleW = chartW / totalSamples;
 
             for (let i = 0; i < historyData.length; i++) {
                 let val = 0;
@@ -2380,16 +2426,27 @@ void handlePortalRoot() {
                 const y = chartH - valH;
 
                 ctx.fillStyle = (type === 'espnow' || type === 'mqtt') ? '#ef4444' : '#38bdf8';
-                ctx.fillRect(x + 2, y, Math.max(2, candleW - 4), valH);
+                ctx.fillRect(x + 1, y, Math.max(2, candleW - 2), valH);
             }
 
             if (greenLineVal !== null) {
                 const greenY = chartH - ((greenLineVal - minY) / (maxY - minY)) * chartH;
                 ctx.strokeStyle = '#22c55e';
                 ctx.lineWidth = 2 * dpr;
-                ctx.setLineDash([6 * dpr, 6 * dpr]);
+                ctx.setLineDash([5 * dpr, 5 * dpr]);
                 ctx.beginPath(); ctx.moveTo(marginL, greenY); ctx.lineTo(w, greenY); ctx.stroke();
                 ctx.setLineDash([]);
+            }
+
+            const baseY = chartH + 1;
+            ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+            ctx.lineWidth = 1 * dpr;
+            ctx.beginPath(); ctx.moveTo(marginL, baseY); ctx.lineTo(w, baseY); ctx.stroke();
+
+            for (let i = 0; i <= totalSamples; i += 12) {
+                const tx = marginL + i * candleW;
+                ctx.lineWidth = 2 * dpr;
+                ctx.beginPath(); ctx.moveTo(tx, baseY); ctx.lineTo(tx, baseY + 6 * dpr); ctx.stroke();
             }
         }
 
