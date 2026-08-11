@@ -22,7 +22,7 @@
 
 
 // Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 10;
+const int localFirmwareVersion = 11;
 
 // Sensor Libraries
 #include <Adafruit_BME280.h>
