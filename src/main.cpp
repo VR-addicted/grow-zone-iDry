@@ -21,7 +21,7 @@
 #include <WiFiClientSecure.h>
 
 // Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 33;
+const int localFirmwareVersion = 35;
 extern int cachedOnlineVersion;
 void checkGithubUpdateAsync(bool force = false);
 
