@@ -21,7 +21,7 @@
 #include <WiFiClientSecure.h>
 
 // Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 19;
+const int localFirmwareVersion = 21;
 
 // Sensor Libraries
 #include <Adafruit_BME280.h>
@@ -200,9 +200,6 @@ unsigned long lastChannelHopTime = 0;
 
 char proposedLmk[33] = "";
 
-// =====================================================================
-// 3-HOUR RAM HISTORY RING BUFFER & DELTA PEAK ACCUMULATORS
-// =====================================================================
 struct HistorySample {
   float temp_0_max;
   float hum_0_max;
@@ -216,22 +213,42 @@ struct HistorySample {
   int8_t rssi_min;
 };
 
-const int HISTORY_SIZE = 288; // 288 samples x 5 minutes = 24 hours
-HistorySample historyBuffer[HISTORY_SIZE];
-int historyCount = 0;
-int historyHead = 0;
+// 60-Minute (1-min resolution) and 24-Hour (5-min resolution) RAM Ring Buffers
+const int HIST_60M_SIZE = 60; // 60 samples x 1 minute = 60 minutes
+HistorySample history60mBuffer[HIST_60M_SIZE];
+int history60mCount = 0;
+int history60mHead = 0;
 
-static float bucket_temp_0_max = NAN;
-static float bucket_hum_0_max = NAN;
-static float bucket_temp_1_max = NAN;
-static float bucket_hum_1_max = NAN;
-static float bucket_lux_0_max = 0.0f;
-static float bucket_lux_1_max = 0.0f;
-static float bucket_rotor_max = 0.0f;
-static uint16_t bucket_espnow_loss_sec = 0;
-static uint16_t bucket_mqtt_loss_sec = 0;
-static int8_t bucket_rssi_min = 0;
-static unsigned long lastHistoryBucketTime = 0;
+const int HIST_24H_SIZE = 288; // 288 samples x 5 minutes = 24 hours
+HistorySample history24hBuffer[HIST_24H_SIZE];
+int history24hCount = 0;
+int history24hHead = 0;
+
+// 1-minute bucket accumulators
+static float b1m_temp_0_max = NAN;
+static float b1m_hum_0_max = NAN;
+static float b1m_temp_1_max = NAN;
+static float b1m_hum_1_max = NAN;
+static float b1m_lux_0_max = 0.0f;
+static float b1m_lux_1_max = 0.0f;
+static float b1m_rotor_max = 0.0f;
+static uint16_t b1m_espnow_loss_sec = 0;
+static uint16_t b1m_mqtt_loss_sec = 0;
+static int8_t b1m_rssi_min = 0;
+static unsigned long last1mBucketTime = 0;
+
+// 5-minute bucket accumulators
+static float b5m_temp_0_max = NAN;
+static float b5m_hum_0_max = NAN;
+static float b5m_temp_1_max = NAN;
+static float b5m_hum_1_max = NAN;
+static float b5m_lux_0_max = 0.0f;
+static float b5m_lux_1_max = 0.0f;
+static float b5m_rotor_max = 0.0f;
+static uint16_t b5m_espnow_loss_sec = 0;
+static uint16_t b5m_mqtt_loss_sec = 0;
+static int8_t b5m_rssi_min = 0;
+static unsigned long last5mBucketTime = 0;
 
 // Main Loop Benchmark Counter
 static unsigned long loopCounter = 0;
@@ -1050,74 +1067,123 @@ int detectedLightSensors = 0;
 
 void updateHistoryAccumulators1s() {
   if (tempSensors[0].active && !isnan(tempSensors[0].temperature)) {
-    if (isnan(bucket_temp_0_max) ||
-        tempSensors[0].temperature > bucket_temp_0_max)
-      bucket_temp_0_max = tempSensors[0].temperature;
-    if (isnan(bucket_hum_0_max) || tempSensors[0].humidity > bucket_hum_0_max)
-      bucket_hum_0_max = tempSensors[0].humidity;
+    if (isnan(b1m_temp_0_max) || tempSensors[0].temperature > b1m_temp_0_max)
+      b1m_temp_0_max = tempSensors[0].temperature;
+    if (isnan(b1m_hum_0_max) || tempSensors[0].humidity > b1m_hum_0_max)
+      b1m_hum_0_max = tempSensors[0].humidity;
+    if (isnan(b5m_temp_0_max) || tempSensors[0].temperature > b5m_temp_0_max)
+      b5m_temp_0_max = tempSensors[0].temperature;
+    if (isnan(b5m_hum_0_max) || tempSensors[0].humidity > b5m_hum_0_max)
+      b5m_hum_0_max = tempSensors[0].humidity;
   }
   if (tempSensors[1].active && !isnan(tempSensors[1].temperature)) {
-    if (isnan(bucket_temp_1_max) ||
-        tempSensors[1].temperature > bucket_temp_1_max)
-      bucket_temp_1_max = tempSensors[1].temperature;
-    if (isnan(bucket_hum_1_max) || tempSensors[1].humidity > bucket_hum_1_max)
-      bucket_hum_1_max = tempSensors[1].humidity;
+    if (isnan(b1m_temp_1_max) || tempSensors[1].temperature > b1m_temp_1_max)
+      b1m_temp_1_max = tempSensors[1].temperature;
+    if (isnan(b1m_hum_1_max) || tempSensors[1].humidity > b1m_hum_1_max)
+      b1m_hum_1_max = tempSensors[1].humidity;
+    if (isnan(b5m_temp_1_max) || tempSensors[1].temperature > b5m_temp_1_max)
+      b5m_temp_1_max = tempSensors[1].temperature;
+    if (isnan(b5m_hum_1_max) || tempSensors[1].humidity > b5m_hum_1_max)
+      b5m_hum_1_max = tempSensors[1].humidity;
   }
   if (lightSensors[0].active && !isnan(lightSensors[0].lux)) {
-    if (lightSensors[0].lux > bucket_lux_0_max)
-      bucket_lux_0_max = lightSensors[0].lux;
+    if (lightSensors[0].lux > b1m_lux_0_max)
+      b1m_lux_0_max = lightSensors[0].lux;
+    if (lightSensors[0].lux > b5m_lux_0_max)
+      b5m_lux_0_max = lightSensors[0].lux;
   }
   if (lightSensors[1].active && !isnan(lightSensors[1].lux)) {
-    if (lightSensors[1].lux > bucket_lux_1_max)
-      bucket_lux_1_max = lightSensors[1].lux;
+    if (lightSensors[1].lux > b1m_lux_1_max)
+      b1m_lux_1_max = lightSensors[1].lux;
+    if (lightSensors[1].lux > b5m_lux_1_max)
+      b5m_lux_1_max = lightSensors[1].lux;
   }
-  if (rotorPosition > bucket_rotor_max)
-    bucket_rotor_max = rotorPosition;
+  if (rotorPosition > b1m_rotor_max)
+    b1m_rotor_max = rotorPosition;
+  if (rotorPosition > b5m_rotor_max)
+    b5m_rotor_max = rotorPosition;
 
   if (sysConfig.espnow_role > 0 &&
       (lastEspNowRxTime == 0 || (millis() - lastEspNowRxTime > 3000))) {
-    bucket_espnow_loss_sec++;
+    b1m_espnow_loss_sec++;
+    b5m_espnow_loss_sec++;
   }
   if (strlen(sysConfig.mqtt_server) > 0 && !mqttClient.connected()) {
-    bucket_mqtt_loss_sec++;
+    b1m_mqtt_loss_sec++;
+    b5m_mqtt_loss_sec++;
   }
   int currentRssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : -100;
-  if (bucket_rssi_min == 0 || currentRssi < bucket_rssi_min) {
-    bucket_rssi_min = (int8_t)currentRssi;
+  if (b1m_rssi_min == 0 || currentRssi < b1m_rssi_min)
+    b1m_rssi_min = (int8_t)currentRssi;
+  if (b5m_rssi_min == 0 || currentRssi < b5m_rssi_min)
+    b5m_rssi_min = (int8_t)currentRssi;
+
+  // 1-minute bucket commit for 60m history
+  if (last1mBucketTime == 0) {
+    last1mBucketTime = millis();
+  } else if (millis() - last1mBucketTime >= 60000UL) {
+    last1mBucketTime = millis();
+    HistorySample s;
+    s.temp_0_max = b1m_temp_0_max;
+    s.hum_0_max = b1m_hum_0_max;
+    s.temp_1_max = b1m_temp_1_max;
+    s.hum_1_max = b1m_hum_1_max;
+    s.lux_0_max = b1m_lux_0_max;
+    s.lux_1_max = b1m_lux_1_max;
+    s.rotor_max = b1m_rotor_max;
+    s.espnow_loss_sec = b1m_espnow_loss_sec;
+    s.mqtt_loss_sec = b1m_mqtt_loss_sec;
+    s.rssi_min = b1m_rssi_min;
+
+    history60mBuffer[history60mHead] = s;
+    history60mHead = (history60mHead + 1) % HIST_60M_SIZE;
+    if (history60mCount < HIST_60M_SIZE)
+      history60mCount++;
+
+    b1m_temp_0_max = NAN;
+    b1m_hum_0_max = NAN;
+    b1m_temp_1_max = NAN;
+    b1m_hum_1_max = NAN;
+    b1m_lux_0_max = 0.0f;
+    b1m_lux_1_max = 0.0f;
+    b1m_rotor_max = 0.0f;
+    b1m_espnow_loss_sec = 0;
+    b1m_mqtt_loss_sec = 0;
+    b1m_rssi_min = (int8_t)currentRssi;
   }
 
-  if (lastHistoryBucketTime == 0) {
-    lastHistoryBucketTime = millis();
-  } else if (millis() - lastHistoryBucketTime >= 300000UL) {
-    lastHistoryBucketTime = millis();
+  // 5-minute bucket commit for 24h history
+  if (last5mBucketTime == 0) {
+    last5mBucketTime = millis();
+  } else if (millis() - last5mBucketTime >= 300000UL) {
+    last5mBucketTime = millis();
+    HistorySample s;
+    s.temp_0_max = b5m_temp_0_max;
+    s.hum_0_max = b5m_hum_0_max;
+    s.temp_1_max = b5m_temp_1_max;
+    s.hum_1_max = b5m_hum_1_max;
+    s.lux_0_max = b5m_lux_0_max;
+    s.lux_1_max = b5m_lux_1_max;
+    s.rotor_max = b5m_rotor_max;
+    s.espnow_loss_sec = b5m_espnow_loss_sec;
+    s.mqtt_loss_sec = b5m_mqtt_loss_sec;
+    s.rssi_min = b5m_rssi_min;
 
-    HistorySample sample;
-    sample.temp_0_max = bucket_temp_0_max;
-    sample.hum_0_max = bucket_hum_0_max;
-    sample.temp_1_max = bucket_temp_1_max;
-    sample.hum_1_max = bucket_hum_1_max;
-    sample.lux_0_max = bucket_lux_0_max;
-    sample.lux_1_max = bucket_lux_1_max;
-    sample.rotor_max = bucket_rotor_max;
-    sample.espnow_loss_sec = bucket_espnow_loss_sec;
-    sample.mqtt_loss_sec = bucket_mqtt_loss_sec;
-    sample.rssi_min = bucket_rssi_min;
+    history24hBuffer[history24hHead] = s;
+    history24hHead = (history24hHead + 1) % HIST_24H_SIZE;
+    if (history24hCount < HIST_24H_SIZE)
+      history24hCount++;
 
-    historyBuffer[historyHead] = sample;
-    historyHead = (historyHead + 1) % HISTORY_SIZE;
-    if (historyCount < HISTORY_SIZE)
-      historyCount++;
-
-    bucket_temp_0_max = NAN;
-    bucket_hum_0_max = NAN;
-    bucket_temp_1_max = NAN;
-    bucket_hum_1_max = NAN;
-    bucket_lux_0_max = 0.0f;
-    bucket_lux_1_max = 0.0f;
-    bucket_rotor_max = 0.0f;
-    bucket_espnow_loss_sec = 0;
-    bucket_mqtt_loss_sec = 0;
-    bucket_rssi_min = 0;
+    b5m_temp_0_max = NAN;
+    b5m_hum_0_max = NAN;
+    b5m_temp_1_max = NAN;
+    b5m_hum_1_max = NAN;
+    b5m_lux_0_max = 0.0f;
+    b5m_lux_1_max = 0.0f;
+    b5m_rotor_max = 0.0f;
+    b5m_espnow_loss_sec = 0;
+    b5m_mqtt_loss_sec = 0;
+    b5m_rssi_min = (int8_t)currentRssi;
   }
 }
 
@@ -1676,56 +1742,107 @@ void handleGetData() {
 
 void handleGetHistory() {
   JsonDocument doc;
-  JsonArray samples = doc["history"].to<JsonArray>();
 
-  int startIdx = (historyCount < HISTORY_SIZE) ? 0 : historyHead;
-  for (int i = 0; i < historyCount; i++) {
-    int idx = (startIdx + i) % HISTORY_SIZE;
-    JsonObject s = samples.add<JsonObject>();
-    s["t0"] = isnan(historyBuffer[idx].temp_0_max)
+  // 60-Minute Array (1-minute resolution for mini preview cards)
+  JsonArray samples60m = doc["h60m"].to<JsonArray>();
+  int start60 = (history60mCount < HIST_60M_SIZE) ? 0 : history60mHead;
+  for (int i = 0; i < history60mCount; i++) {
+    int idx = (start60 + i) % HIST_60M_SIZE;
+    JsonObject s = samples60m.add<JsonObject>();
+    s["t0"] = isnan(history60mBuffer[idx].temp_0_max)
                   ? JsonVariant()
-                  : historyBuffer[idx].temp_0_max;
-    s["h0"] = isnan(historyBuffer[idx].hum_0_max)
+                  : history60mBuffer[idx].temp_0_max;
+    s["h0"] = isnan(history60mBuffer[idx].hum_0_max)
                   ? JsonVariant()
-                  : historyBuffer[idx].hum_0_max;
-    s["t1"] = isnan(historyBuffer[idx].temp_1_max)
+                  : history60mBuffer[idx].hum_0_max;
+    s["t1"] = isnan(history60mBuffer[idx].temp_1_max)
                   ? JsonVariant()
-                  : historyBuffer[idx].temp_1_max;
-    s["h1"] = isnan(historyBuffer[idx].hum_1_max)
+                  : history60mBuffer[idx].temp_1_max;
+    s["h1"] = isnan(history60mBuffer[idx].hum_1_max)
                   ? JsonVariant()
-                  : historyBuffer[idx].hum_1_max;
-    s["r"] = historyBuffer[idx].rotor_max;
-    s["el"] = historyBuffer[idx].espnow_loss_sec;
-    s["ml"] = historyBuffer[idx].mqtt_loss_sec;
-    s["rssi"] = historyBuffer[idx].rssi_min;
+                  : history60mBuffer[idx].hum_1_max;
+    s["l0"] = history60mBuffer[idx].lux_0_max;
+    s["l1"] = history60mBuffer[idx].lux_1_max;
+    s["r"] = history60mBuffer[idx].rotor_max;
+    s["el"] = history60mBuffer[idx].espnow_loss_sec;
+    s["ml"] = history60mBuffer[idx].mqtt_loss_sec;
+    s["rssi"] = history60mBuffer[idx].rssi_min;
   }
+  // Active live 1-minute bucket
+  JsonObject live1m = samples60m.add<JsonObject>();
+  live1m["t0"] = isnan(b1m_temp_0_max) ? (isnan(tempSensors[0].temperature)
+                                              ? JsonVariant()
+                                              : tempSensors[0].temperature)
+                                       : b1m_temp_0_max;
+  live1m["h0"] = isnan(b1m_hum_0_max) ? (isnan(tempSensors[0].humidity)
+                                             ? JsonVariant()
+                                             : tempSensors[0].humidity)
+                                      : b1m_hum_0_max;
+  live1m["t1"] = isnan(b1m_temp_1_max) ? (isnan(tempSensors[1].temperature)
+                                              ? JsonVariant()
+                                              : tempSensors[1].temperature)
+                                       : b1m_temp_1_max;
+  live1m["h1"] = isnan(b1m_hum_1_max) ? (isnan(tempSensors[1].humidity)
+                                             ? JsonVariant()
+                                             : tempSensors[1].humidity)
+                                      : b1m_hum_1_max;
+  live1m["l0"] = b1m_lux_0_max;
+  live1m["l1"] = b1m_lux_1_max;
+  live1m["r"] = (rotorPosition > b1m_rotor_max) ? rotorPosition : b1m_rotor_max;
+  live1m["el"] = b1m_espnow_loss_sec;
+  live1m["ml"] = b1m_mqtt_loss_sec;
+  int8_t activeRssi = (WiFi.status() == WL_CONNECTED) ? (int8_t)WiFi.RSSI() : -100;
+  live1m["rssi"] = (b1m_rssi_min == 0) ? activeRssi : b1m_rssi_min;
 
-  // ALWAYS append the currently active in-progress bucket as the live final
-  // sample!
-  JsonObject live = samples.add<JsonObject>();
-  live["t0"] = isnan(bucket_temp_0_max) ? (isnan(tempSensors[0].temperature)
-                                               ? JsonVariant()
-                                               : tempSensors[0].temperature)
-                                        : bucket_temp_0_max;
-  live["h0"] = isnan(bucket_hum_0_max)
-                   ? (isnan(tempSensors[0].humidity) ? JsonVariant()
-                                                     : tempSensors[0].humidity)
-                   : bucket_hum_0_max;
-  live["t1"] = isnan(bucket_temp_1_max) ? (isnan(tempSensors[1].temperature)
-                                               ? JsonVariant()
-                                               : tempSensors[1].temperature)
-                                        : bucket_temp_1_max;
-  live["h1"] = isnan(bucket_hum_1_max)
-                   ? (isnan(tempSensors[1].humidity) ? JsonVariant()
-                                                     : tempSensors[1].humidity)
-                   : bucket_hum_1_max;
-  live["l0"] = bucket_lux_0_max;
-  live["l1"] = bucket_lux_1_max;
-  live["r"] =
-      (rotorPosition > bucket_rotor_max) ? rotorPosition : bucket_rotor_max;
-  live["el"] = bucket_espnow_loss_sec;
-  live["ml"] = bucket_mqtt_loss_sec;
-  live["rssi"] = bucket_rssi_min;
+  // 24-Hour Array (5-minute resolution for modal zoom)
+  JsonArray samples24h = doc["h24h"].to<JsonArray>();
+  int start24 = (history24hCount < HIST_24H_SIZE) ? 0 : history24hHead;
+  for (int i = 0; i < history24hCount; i++) {
+    int idx = (start24 + i) % HIST_24H_SIZE;
+    JsonObject s = samples24h.add<JsonObject>();
+    s["t0"] = isnan(history24hBuffer[idx].temp_0_max)
+                  ? JsonVariant()
+                  : history24hBuffer[idx].temp_0_max;
+    s["h0"] = isnan(history24hBuffer[idx].hum_0_max)
+                  ? JsonVariant()
+                  : history24hBuffer[idx].hum_0_max;
+    s["t1"] = isnan(history24hBuffer[idx].temp_1_max)
+                  ? JsonVariant()
+                  : history24hBuffer[idx].temp_1_max;
+    s["h1"] = isnan(history24hBuffer[idx].hum_1_max)
+                  ? JsonVariant()
+                  : history24hBuffer[idx].hum_1_max;
+    s["l0"] = history24hBuffer[idx].lux_0_max;
+    s["l1"] = history24hBuffer[idx].lux_1_max;
+    s["r"] = history24hBuffer[idx].rotor_max;
+    s["el"] = history24hBuffer[idx].espnow_loss_sec;
+    s["ml"] = history24hBuffer[idx].mqtt_loss_sec;
+    s["rssi"] = history24hBuffer[idx].rssi_min;
+  }
+  // Active live 5-minute bucket
+  JsonObject live5m = samples24h.add<JsonObject>();
+  live5m["t0"] = isnan(b5m_temp_0_max) ? (isnan(tempSensors[0].temperature)
+                                              ? JsonVariant()
+                                              : tempSensors[0].temperature)
+                                       : b5m_temp_0_max;
+  live5m["h0"] = isnan(b5m_hum_0_max) ? (isnan(tempSensors[0].humidity)
+                                             ? JsonVariant()
+                                             : tempSensors[0].humidity)
+                                      : b5m_hum_0_max;
+  live5m["t1"] = isnan(b5m_temp_1_max) ? (isnan(tempSensors[1].temperature)
+                                              ? JsonVariant()
+                                              : tempSensors[1].temperature)
+                                       : b5m_temp_1_max;
+  live5m["h1"] = isnan(b5m_hum_1_max) ? (isnan(tempSensors[1].humidity)
+                                             ? JsonVariant()
+                                             : tempSensors[1].humidity)
+                                      : b5m_hum_1_max;
+  live5m["l0"] = b5m_lux_0_max;
+  live5m["l1"] = b5m_lux_1_max;
+  live5m["r"] = (rotorPosition > b5m_rotor_max) ? rotorPosition : b5m_rotor_max;
+  live5m["el"] = b5m_espnow_loss_sec;
+  live5m["ml"] = b5m_mqtt_loss_sec;
+  live5m["rssi"] = (b5m_rssi_min == 0) ? activeRssi : b5m_rssi_min;
 
   String jsonResponse;
   serializeJson(doc, jsonResponse);
@@ -1891,13 +2008,13 @@ void handlePortalRoot() {
                 <div class="value-row" id="dp-row-0"><span>Taupunkt:</span><span class="val" id="dp-0">--</span></div>
                 <div class="value-row" id="press-row-0"><span>Luftdruck:</span><span class="val" id="press-0">--</span></div>
                 <details open class="hist-toggle" id="details-temp-0" ontoggle="renderAllCharts()">
-                    <summary>3h Verlauf (Temperatur)</summary>
+                    <summary>60m Verlauf (Temperatur)</summary>
                     <div class="spark-box" onclick="openChartZoom('temp_0', 'Sensor 1 Temperatur')">
                         <canvas id="cv-temp-0"></canvas>
                     </div>
                 </details>
                 <details open class="hist-toggle" id="details-hum-0" ontoggle="renderAllCharts()">
-                    <summary>3h Verlauf (Luftfeuchtigkeit)</summary>
+                    <summary>60m Verlauf (Luftfeuchtigkeit)</summary>
                     <div class="spark-box" onclick="openChartZoom('hum_0', 'Sensor 1 Luftfeuchtigkeit')">
                         <canvas id="cv-hum-0"></canvas>
                     </div>
@@ -1910,13 +2027,13 @@ void handlePortalRoot() {
                 <div class="value-row" id="dp-row-1"><span>Taupunkt:</span><span class="val" id="dp-1">--</span></div>
                 <div class="value-row" id="press-row-1"><span>Luftdruck:</span><span class="val" id="press-1">--</span></div>
                 <details open class="hist-toggle" id="details-temp-1" ontoggle="renderAllCharts()">
-                    <summary>3h Verlauf (Temperatur)</summary>
+                    <summary>60m Verlauf (Temperatur)</summary>
                     <div class="spark-box" onclick="openChartZoom('temp_1', 'Sensor 2 Temperatur')">
                         <canvas id="cv-temp-1"></canvas>
                     </div>
                 </details>
                 <details open class="hist-toggle" id="details-hum-1" ontoggle="renderAllCharts()">
-                    <summary>3h Verlauf (Luftfeuchtigkeit)</summary>
+                    <summary>60m Verlauf (Luftfeuchtigkeit)</summary>
                     <div class="spark-box" onclick="openChartZoom('hum_1', 'Sensor 2 Luftfeuchtigkeit')">
                         <canvas id="cv-hum-1"></canvas>
                     </div>
@@ -1928,7 +2045,7 @@ void handlePortalRoot() {
                 <div class="value-row"><span>Breitband:</span><span class="val" id="broadband-val-0">--</span></div>
                 <div class="value-row"><span>Infrarot:</span><span class="val" id="ir-val-0">--</span></div>
                 <details open class="hist-toggle" id="details-lux-0" ontoggle="renderAllCharts()">
-                    <summary>3h Verlauf (Helligkeit)</summary>
+                    <summary>60m Verlauf (Helligkeit)</summary>
                     <div class="spark-box" onclick="openChartZoom('lux_0', 'TSL2561 (1) Helligkeit')">
                         <canvas id="cv-lux-0"></canvas>
                     </div>
@@ -1940,7 +2057,7 @@ void handlePortalRoot() {
                 <div class="value-row"><span>Breitband:</span><span class="val" id="broadband-val-1">--</span></div>
                 <div class="value-row"><span>Infrarot:</span><span class="val" id="ir-val-1">--</span></div>
                 <details open class="hist-toggle" id="details-lux-1" ontoggle="renderAllCharts()">
-                    <summary>3h Verlauf (Helligkeit)</summary>
+                    <summary>60m Verlauf (Helligkeit)</summary>
                     <div class="spark-box" onclick="openChartZoom('lux_1', 'TSL2561 (2) Helligkeit')">
                         <canvas id="cv-lux-1"></canvas>
                     </div>
@@ -1959,7 +2076,7 @@ void handlePortalRoot() {
                     <div id="luna" class="moon"></div>
                 </div>
                 <details open class="hist-toggle" id="details-rotor" ontoggle="renderAllCharts()">
-                    <summary>3h Verlauf (Rotor Öffnung)</summary>
+                    <summary>60m Verlauf (Rotor Öffnung)</summary>
                     <div class="spark-box" onclick="openChartZoom('rotor', 'Rotor Stellung Verlauf')">
                         <canvas id="cv-rotor"></canvas>
                     </div>
@@ -1971,7 +2088,7 @@ void handlePortalRoot() {
                 <div class="value-row"><span>Verbindung:</span><span class="val" id="espnow-val-conn">--</span></div>
                 <div class="value-row"><span>Protokoll:</span><span class="val" id="espnow-val-pv">--</span></div>
                 <details open class="hist-toggle" id="details-espnow" ontoggle="renderAllCharts()">
-                    <summary>3h Verbindungsausfälle</summary>
+                    <summary>60m Verbindungsausfälle</summary>
                     <div class="spark-box" onclick="openChartZoom('espnow', 'ESP-NOW Link Loss Verlauf')">
                         <canvas id="cv-espnow"></canvas>
                     </div>
@@ -1983,7 +2100,7 @@ void handlePortalRoot() {
                 <div class="value-row"><span>Status:</span><span class="val" id="mqtt-status">--</span></div>
                 <div class="value-row"><span style="flex-shrink: 0; margin-right: 10px;">Topic:</span><span class="val" id="mqtt-topic" style="font-size:11px; text-align: right; word-break:break-all;">--</span></div>
                 <details open class="hist-toggle" id="details-mqtt" ontoggle="renderAllCharts()">
-                    <summary>3h Broker Ausfälle</summary>
+                    <summary>60m Broker Ausfälle</summary>
                     <div class="spark-box" onclick="openChartZoom('mqtt', 'MQTT Link Loss Verlauf')">
                         <canvas id="cv-mqtt"></canvas>
                     </div>
@@ -2005,7 +2122,7 @@ void handlePortalRoot() {
             </div>
             <div class="value-row"><span>Watchdog reset weekly:</span><span class="val" id="sys-wd-reset" style="font-family: monospace;">--</span></div>
             <details open class="hist-toggle" id="details-rssi" ontoggle="renderAllCharts()">
-                <summary>3h Signalstärke Verlauf (RSSI)</summary>
+                <summary>60m Signalstärke Verlauf (RSSI)</summary>
                 <div class="spark-box" onclick="openChartZoom('rssi', 'WLAN Signalstärke Verlauf')">
                     <canvas id="cv-rssi"></canvas>
                 </div>
@@ -2209,6 +2326,24 @@ void handlePortalRoot() {
                     if (benchEl) {
                         benchEl.innerText = data.loops_per_sec || 0;
                     }
+
+                    // Update live candle in history60m in real time every 1 second!
+                    if (history60m && history60m.length > 0) {
+                        let liveSample = history60m[history60m.length - 1];
+                        if (data.sensors && data.sensors[0]) {
+                            liveSample.t0 = data.sensors[0].temp;
+                            liveSample.h0 = data.sensors[0].hum;
+                        }
+                        if (data.sensors && data.sensors[1]) {
+                            liveSample.t1 = data.sensors[1].temp;
+                            liveSample.h1 = data.sensors[1].hum;
+                        }
+                        if (data.lights && data.lights[0]) liveSample.l0 = data.lights[0].lux;
+                        if (data.lights && data.lights[1]) liveSample.l1 = data.lights[1].lux;
+                        liveSample.r = data.rotor_position;
+                        liveSample.rssi = data.rssi;
+                        renderAllCharts();
+                    }
                 })
                 .catch(err => {
                     // Connection lost to ESP32
@@ -2230,14 +2365,16 @@ void handlePortalRoot() {
                 });
         }
 
-        let historyData = [];
+        let history60m = [];
+        let history24h = [];
 
         function fetchHistory() {
             fetchWithTimeout('/api/history', { timeout: 2000 })
                 .then(r => r.json())
                 .then(data => {
-                    if (data && data.history) {
-                        historyData = data.history;
+                    if (data) {
+                        history60m = data.h60m || [];
+                        history24h = data.h24h || [];
                         renderAllCharts();
                     }
                 }).catch(e => console.error("History fetch error", e));
@@ -2273,9 +2410,9 @@ void handlePortalRoot() {
             const h = canvas.height = boxH * dpr;
 
             ctx.clearRect(0, 0, w, h);
-            if (!historyData || historyData.length === 0) return;
+            if (!history60m || history60m.length === 0) return;
 
-            const data3h = historyData.slice(-36);
+            const data60m = history60m.slice(-60);
 
             let minY = 0, maxY = 100, midY = 50;
             let labelMax = "100", labelMid = "50", labelMin = "0";
@@ -2313,12 +2450,13 @@ void handlePortalRoot() {
             const chartW = w - marginL;
             const chartH = h - 6 * dpr;
 
-            const count = 36;
+            const count = 60; // 60 candles = 60 minutes
             const candleW = chartW / count;
+            const offsetIndex = count - data60m.length;
 
-            for (let i = 0; i < data3h.length; i++) {
+            for (let i = 0; i < data60m.length; i++) {
                 let val = 0;
-                const d = data3h[i];
+                const d = data60m[i];
                 if (type === 'temp') val = (index === 0 ? d.t0 : d.t1);
                 else if (type === 'hum') val = (index === 0 ? d.h0 : d.h1);
                 else if (type === 'lux') val = (index === 0 ? d.l0 : d.l1);
@@ -2326,7 +2464,7 @@ void handlePortalRoot() {
                 else if (type === 'espnow') val = d.el;
                 else if (type === 'mqtt') val = d.ml;
                 else if (type === 'rssi') {
-                    let r = d.rssi || -100;
+                    let r = (d.rssi !== undefined && d.rssi !== null && d.rssi !== 0) ? d.rssi : -100;
                     val = Math.round((r + 100) * 10 / 7);
                 }
 
@@ -2335,7 +2473,8 @@ void handlePortalRoot() {
                 if (val > maxY) val = maxY;
 
                 const valH = ((val - minY) / (maxY - minY)) * chartH;
-                const x = marginL + i * candleW;
+                const candleIndex = offsetIndex + i;
+                const x = marginL + candleIndex * candleW;
                 const y = chartH - valH;
 
                 ctx.fillStyle = (type === 'espnow' || type === 'mqtt') ? '#f87171' : '#38bdf8';
@@ -2362,10 +2501,10 @@ void handlePortalRoot() {
             ctx.lineTo(w, baseY);
             ctx.stroke();
 
-            for (let i = 0; i <= count; i += 6) {
+            for (let i = 0; i <= count; i += 15) {
                 const tx = marginL + i * candleW;
-                const tickH = (i % 12 === 0) ? 4 * dpr : 2 * dpr;
-                ctx.lineWidth = (i % 12 === 0) ? 2 * dpr : 1 * dpr;
+                const tickH = (i % 30 === 0) ? 4 * dpr : 2 * dpr;
+                ctx.lineWidth = (i % 30 === 0) ? 2 * dpr : 1 * dpr;
                 ctx.beginPath();
                 ctx.moveTo(tx, baseY);
                 ctx.lineTo(tx, baseY + tickH);
@@ -2396,7 +2535,7 @@ void handlePortalRoot() {
             const dpr = window.devicePixelRatio || 1;
             const container = canvas.parentElement;
 
-            const totalSamples = Math.max(36, historyData.length);
+            const totalSamples = 288;
             const containerWidth = container.offsetWidth || 600;
             const canvasW = Math.max(containerWidth, totalSamples * 5);
             const canvasH = 200;
@@ -2407,7 +2546,7 @@ void handlePortalRoot() {
             canvas.style.height = canvasH + "px";
 
             ctx.clearRect(0, 0, w, h);
-            if (!historyData || historyData.length === 0) return;
+            if (!history24h || history24h.length === 0) return;
 
             let type = currentZoomType, index = 0;
             if (type.startsWith('temp_')) { index = parseInt(type.split('_')[1]); type = 'temp'; }
@@ -2431,22 +2570,24 @@ void handlePortalRoot() {
             const chartW = w - marginL;
             const chartH = h - 15 * dpr;
             const candleW = chartW / totalSamples;
+            const offsetIndex = totalSamples - history24h.length;
 
-            for (let i = 0; i < historyData.length; i++) {
+            for (let i = 0; i < history24h.length; i++) {
                 let val = 0;
-                const d = historyData[i];
+                const d = history24h[i];
                 if (type === 'temp') val = (index === 0 ? d.t0 : d.t1);
                 else if (type === 'hum') val = (index === 0 ? d.h0 : d.h1);
                 else if (type === 'lux') val = (index === 0 ? d.l0 : d.l1);
                 else if (type === 'rotor') val = d.r;
                 else if (type === 'espnow') val = d.el;
                 else if (type === 'mqtt') val = d.ml;
-                else if (type === 'rssi') { let r = d.rssi || -100; val = Math.round((r + 100) * 10 / 7); }
+                else if (type === 'rssi') { let r = (d.rssi !== undefined && d.rssi !== null && d.rssi !== 0) ? d.rssi : -100; val = Math.round((r + 100) * 10 / 7); }
 
                 if (val === null || val === undefined || isNaN(val)) continue;
                 if (val < minY) val = minY; if (val > maxY) val = maxY;
                 const valH = ((val - minY) / (maxY - minY)) * chartH;
-                const x = marginL + i * candleW;
+                const candleIndex = offsetIndex + i;
+                const x = marginL + candleIndex * candleW;
                 const y = chartH - valH;
 
                 ctx.fillStyle = (type === 'espnow' || type === 'mqtt') ? '#ef4444' : '#38bdf8';
@@ -2475,7 +2616,7 @@ void handlePortalRoot() {
         }
 
         setInterval(updateData, 1000);
-        setInterval(fetchHistory, 15000);
+        setInterval(fetchHistory, 2000);
         updateData();
         fetchHistory();
     </script>
