@@ -21,7 +21,7 @@
 #include <WiFiClientSecure.h>
 
 // Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 28;
+const int localFirmwareVersion = 29;
 
 // Sensor Libraries
 #include <Adafruit_BME280.h>
@@ -217,11 +217,12 @@ struct HistorySample {
   int8_t rssi_min;
 };
 
-// 60-Minute (1-min resolution) and 24-Hour (5-min resolution) RAM Ring Buffers
-const int HIST_60M_SIZE = 60; // 60 samples x 1 minute = 60 minutes
-HistorySample history60mBuffer[HIST_60M_SIZE];
-int history60mCount = 0;
-int history60mHead = 0;
+// 120-Minute (1-min resolution) and 24-Hour (5-min resolution) RAM Ring Buffers
+const int HIST_120M_SIZE =
+    120; // 120 samples x 1 minute = 120 minutes (2 hours)
+HistorySample history120mBuffer[HIST_120M_SIZE];
+int history120mCount = 0;
+int history120mHead = 0;
 
 const int HIST_24H_SIZE = 288; // 288 samples x 5 minutes = 24 hours
 HistorySample history24hBuffer[HIST_24H_SIZE];
@@ -1173,10 +1174,10 @@ void updateHistoryAccumulators1s() {
     s.mqtt_loss_sec = b1m_mqtt_loss_sec;
     s.rssi_min = b1m_rssi_min;
 
-    history60mBuffer[history60mHead] = s;
-    history60mHead = (history60mHead + 1) % HIST_60M_SIZE;
-    if (history60mCount < HIST_60M_SIZE)
-      history60mCount++;
+    history120mBuffer[history120mHead] = s;
+    history120mHead = (history120mHead + 1) % HIST_120M_SIZE;
+    if (history120mCount < HIST_120M_SIZE)
+      history120mCount++;
 
     b1m_temp_0_min = NAN;
     b1m_temp_0_max = NAN;
@@ -1793,45 +1794,46 @@ void handleGetData() {
 void handleGetHistory() {
   JsonDocument doc;
 
-  // 60-Minute Array (1-minute resolution for mini preview cards)
-  JsonArray samples60m = doc["h60m"].to<JsonArray>();
-  int start60 = (history60mCount < HIST_60M_SIZE) ? 0 : history60mHead;
-  for (int i = 0; i < history60mCount; i++) {
-    int idx = (start60 + i) % HIST_60M_SIZE;
-    JsonObject s = samples60m.add<JsonObject>();
-    s["t0_min"] = isnan(history60mBuffer[idx].temp_0_min)
+  // 120-Minute Array (1-minute resolution for mini preview cards & 2h RSSI
+  // status panel)
+  JsonArray samples120m = doc["h120m"].to<JsonArray>();
+  int start120 = (history120mCount < HIST_120M_SIZE) ? 0 : history120mHead;
+  for (int i = 0; i < history120mCount; i++) {
+    int idx = (start120 + i) % HIST_120M_SIZE;
+    JsonObject s = samples120m.add<JsonObject>();
+    s["t0_min"] = isnan(history120mBuffer[idx].temp_0_min)
                       ? JsonVariant()
-                      : history60mBuffer[idx].temp_0_min;
-    s["t0"] = isnan(history60mBuffer[idx].temp_0_max)
+                      : history120mBuffer[idx].temp_0_min;
+    s["t0"] = isnan(history120mBuffer[idx].temp_0_max)
                   ? JsonVariant()
-                  : history60mBuffer[idx].temp_0_max;
-    s["h0_min"] = isnan(history60mBuffer[idx].hum_0_min)
+                  : history120mBuffer[idx].temp_0_max;
+    s["h0_min"] = isnan(history120mBuffer[idx].hum_0_min)
                       ? JsonVariant()
-                      : history60mBuffer[idx].hum_0_min;
-    s["h0"] = isnan(history60mBuffer[idx].hum_0_max)
+                      : history120mBuffer[idx].hum_0_min;
+    s["h0"] = isnan(history120mBuffer[idx].hum_0_max)
                   ? JsonVariant()
-                  : history60mBuffer[idx].hum_0_max;
-    s["t1_min"] = isnan(history60mBuffer[idx].temp_1_min)
+                  : history120mBuffer[idx].hum_0_max;
+    s["t1_min"] = isnan(history120mBuffer[idx].temp_1_min)
                       ? JsonVariant()
-                      : history60mBuffer[idx].temp_1_min;
-    s["t1"] = isnan(history60mBuffer[idx].temp_1_max)
+                      : history120mBuffer[idx].temp_1_min;
+    s["t1"] = isnan(history120mBuffer[idx].temp_1_max)
                   ? JsonVariant()
-                  : history60mBuffer[idx].temp_1_max;
-    s["h1_min"] = isnan(history60mBuffer[idx].hum_1_min)
+                  : history120mBuffer[idx].temp_1_max;
+    s["h1_min"] = isnan(history120mBuffer[idx].hum_1_min)
                       ? JsonVariant()
-                      : history60mBuffer[idx].hum_1_min;
-    s["h1"] = isnan(history60mBuffer[idx].hum_1_max)
+                      : history120mBuffer[idx].hum_1_min;
+    s["h1"] = isnan(history120mBuffer[idx].hum_1_max)
                   ? JsonVariant()
-                  : history60mBuffer[idx].hum_1_max;
-    s["l0"] = history60mBuffer[idx].lux_0_max;
-    s["l1"] = history60mBuffer[idx].lux_1_max;
-    s["r"] = history60mBuffer[idx].rotor_max;
-    s["el"] = history60mBuffer[idx].espnow_loss_sec;
-    s["ml"] = history60mBuffer[idx].mqtt_loss_sec;
-    s["rssi"] = history60mBuffer[idx].rssi_min;
+                  : history120mBuffer[idx].hum_1_max;
+    s["l0"] = history120mBuffer[idx].lux_0_max;
+    s["l1"] = history120mBuffer[idx].lux_1_max;
+    s["r"] = history120mBuffer[idx].rotor_max;
+    s["el"] = history120mBuffer[idx].espnow_loss_sec;
+    s["ml"] = history120mBuffer[idx].mqtt_loss_sec;
+    s["rssi"] = history120mBuffer[idx].rssi_min;
   }
   // Active live 1-minute bucket
-  JsonObject live1m = samples60m.add<JsonObject>();
+  JsonObject live1m = samples120m.add<JsonObject>();
   live1m["t0_min"] = isnan(b1m_temp_0_min) ? (isnan(tempSensors[0].temperature)
                                                   ? JsonVariant()
                                                   : tempSensors[0].temperature)
@@ -2229,7 +2231,7 @@ void handlePortalRoot() {
             </div>
             <div class="value-row"><span>Watchdog reset weekly:</span><span class="val" id="sys-wd-reset" style="font-family: monospace;">--</span></div>
             <details open class="hist-toggle" id="details-rssi" ontoggle="renderAllCharts()">
-                <summary>60m Signalstärke Verlauf (RSSI)</summary>
+                <summary>2h Signalstärke Verlauf (RSSI)</summary>
                 <div class="spark-box" onclick="openChartZoom('rssi', 'WLAN Signalstärke Verlauf')">
                     <canvas id="cv-rssi"></canvas>
                 </div>
@@ -2455,7 +2457,7 @@ void handlePortalRoot() {
                 });
         }
 
-        let history60m = [];
+        let history120m = [];
         let history24h = [];
 
         function fetchHistory() {
@@ -2463,7 +2465,7 @@ void handlePortalRoot() {
                 .then(r => r.json())
                 .then(data => {
                     if (data) {
-                        history60m = data.h60m || [];
+                        history120m = data.h120m || [];
                         history24h = data.h24h || [];
                         renderAllCharts();
                     }
@@ -2500,9 +2502,10 @@ void handlePortalRoot() {
             const h = canvas.height = boxH * dpr;
 
             ctx.clearRect(0, 0, w, h);
-            if (!history60m || history60m.length === 0) return;
+            if (!history120m || history120m.length === 0) return;
 
-            const data60m = history60m.slice(-60);
+            const count = (type === 'rssi') ? 120 : 60;
+            const data120m = history120m.slice(-count);
 
             let minY = 0, maxY = 100, midY = 50;
             let labelMax = "100", labelMid = "50", labelMin = "0";
@@ -2523,8 +2526,8 @@ void handlePortalRoot() {
                 maxY = 100; minY = 0; midY = 50;
                 labelMax = "100"; labelMid = "50"; labelMin = "0";
             } else if (type === 'espnow' || type === 'mqtt') {
-                maxY = 49; minY = 0; midY = 25;
-                labelMax = "49"; labelMid = "25"; labelMin = "0";
+                maxY = 60; minY = 0; midY = 30;
+                labelMax = "60"; labelMid = "30"; labelMin = "0";
             }
 
             ctx.fillStyle = '#64748b';
@@ -2540,12 +2543,11 @@ void handlePortalRoot() {
             const chartW = w - marginL;
             const chartH = h - 6 * dpr;
 
-            const count = 60; // 60 candles = 60 minutes
             const candleW = chartW / count;
-            const offsetIndex = count - data60m.length;
+            const offsetIndex = count - data120m.length;
 
-            for (let i = 0; i < data60m.length; i++) {
-                const d = data60m[i];
+            for (let i = 0; i < data120m.length; i++) {
+                const d = data120m[i];
                 let valMax = 0, valMin = 0;
 
                 if (type === 'temp') {
@@ -2628,10 +2630,11 @@ void handlePortalRoot() {
             ctx.lineTo(w, baseY);
             ctx.stroke();
 
-            for (let i = 0; i <= count; i += 15) {
+            const tickStep = (type === 'rssi') ? 30 : 15;
+            for (let i = 0; i <= count; i += tickStep) {
                 const tx = marginL + i * candleW;
-                const tickH = (i % 30 === 0) ? 4 * dpr : 2 * dpr;
-                ctx.lineWidth = (i % 30 === 0) ? 2 * dpr : 1 * dpr;
+                const tickH = (i % (tickStep * 2) === 0) ? 4 * dpr : 2 * dpr;
+                ctx.lineWidth = (i % (tickStep * 2) === 0) ? 2 * dpr : 1 * dpr;
                 ctx.beginPath();
                 ctx.moveTo(tx, baseY);
                 ctx.lineTo(tx, baseY + tickH);
@@ -2691,7 +2694,7 @@ void handlePortalRoot() {
             else if (type === 'hum') { maxY = 100; labelMax = "100"; labelMid = "50"; labelMin = "0"; greenLineVal = 50; }
             else if (type === 'lux') { maxY = 1000; labelMax = "1000"; labelMid = "500"; labelMin = "0"; }
             else if (type === 'rotor' || type === 'rssi') { maxY = 100; labelMax = "100"; labelMid = "50"; labelMin = "0"; }
-            else if (type === 'espnow' || type === 'mqtt') { maxY = 49; labelMax = "49"; labelMid = "25"; labelMin = "0"; }
+            else if (type === 'espnow' || type === 'mqtt') { maxY = 60; labelMax = "60"; labelMid = "30"; labelMin = "0"; }
 
             ctx.fillStyle = '#94a3b8';
             ctx.font = `${11 * dpr}px monospace`;
