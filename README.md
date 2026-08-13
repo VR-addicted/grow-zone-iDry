@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/Telemetry-Gapless%20Canvas%20Sparklines-blueviolet.svg" alt="Sparklines">
 </p>
 
-**iDry-26** ist eine hochentwickelte, ausfallsichere IoT-Klima- und Lüftungsklappensteuerung auf Basis des **YD-ESP32-S3**. Das System regelt Lüftungsrohre über Servo-Blendenverschlüsse vollautomatisch, schützt Erntegut und Kräuter vor Übertrocknung sowie Feuchtigkeitsinjektion (Thermodynamischer Feuchteschutz), kommuniziert verschlüsselt über **ESP-NOW Master/Slave-Kopplung**, bietet nahtlose **1-Klick Home Assistant Auto-Discovery** und unterstützt flexible Hardware-Ausbaustufen von *Headless* bis *Vollausbau*.
+**iDry-26** *(kurz für **intelligent Dry 2026**)* ist eine hochentwickelte, ausfallsichere IoT-Klima- und Lüftungsklappensteuerung auf Basis des **YD-ESP32-S3**. Das System regelt Lüftungsrohre über Servo-Blendenverschlüsse vollautomatisch, schützt Erntegut und Kräuter vor Übertrocknung sowie Feuchtigkeitsinjektion (Thermodynamischer Feuchteschutz), kommuniziert ausfallsicher über **ESP-NOW Master/Slave-Kopplung** (gezielte MAC- & Protokoll-Verifikation), bietet nahtlose **1-Klick Home Assistant Auto-Discovery** und unterstützt flexible Hardware-Ausbaustufen von *Headless* bis *Vollausbau*.
 
 ---
 
@@ -116,8 +116,8 @@ Das System erkennt alle Komponenten beim Systemstart vollautomatisch und passt s
    * **Dual I2C Helligkeitssensoren:** TSL2561 (Breitband + Infrarot).
    * **3x Analog-Potentiometer:** Poti A (Sollwert Feuchte 48-72%), Poti B (Gain 0-400%), Poti C (Servo-Nullpunkt Offset 0-59°).
    * **Aktorik & Akustik:** PWM-Servo (LEDC Sinus-Ramping) + Passiver Buzzer für Arpeggio-Melodien und Alarme.
-4. **Stufe 4: Verschlüsseltes ESP-NOW Master/Slave Mesh**
-   * Drahtlose Synchronisation zweier Einheiten über CCMP LMK 128-Bit Hardware-Verschlüsselung.
+4. **Stufe 4: Ausfallsicheres ESP-NOW Master/Slave Mesh**
+   * Drahtlose Echtzeit-Synchronisation zweier Einheiten mit gezielter MAC-Adressen-Kopplung & Protokollversions-Verifikation (unverschlüsseltes Peering für 100% verlässliche Übertragung ohne Paketverluste bei WLAN-Kanalwechseln).
    * Der Master spiegelt seine Klappenstellung in Echtzeit auf den Slave.
    * **Notfall-Fail-Safe Schutz:** Bricht die Funkverbindung >60s ab, fährt der Slave automatisch auf 50% Sicherheitsöffnung oder übernimmt autonom über lokale Sensoren.
 5. **Stufe 5: Nahtlose Home Assistant Integration (1-Klick Auto-Discovery)**

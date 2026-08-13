@@ -66,7 +66,7 @@ Do not change SPI, I2C, ADC, or actuator pin assignments:
 
 ## ESP-NOW Master/Slave Mesh & Fail-Safe Protection
 * **Protocol Versioning:** Increment `localProtocolVersion` whenever `EspNowMessage` struct or command payload changes. Web UI alerts user on version mismatch.
-* **Fast-Track Channel Pairing:** Master broadcasts pairing beacons on Wi-Fi channel; Slave hops channels 1–13 every 1.2s to establish peer MAC and 128-bit CCMP LMK hardware encryption. Case-insensitive MAC comparison (`strcasecmp`).
+* **Fast-Track Channel Pairing:** Master broadcasts pairing beacons on Wi-Fi channel; Slave hops channels 1–13 every 1.2s to establish peer MAC address binding and protocol version verification (`peerInfo.encrypt = false` to guarantee 0% packet loss during Wi-Fi channel hopping). Case-insensitive MAC comparison (`strcasecmp`).
 * **Aggressive Reconnection (>20s):** On Slave devices, if no packet is received for >20 seconds, re-initialize ESP-NOW stack (`initEspNow()`) every 15 seconds without MCU reboot.
 * **2-Stage Fail-Safe Mode (>60s Connection Loss):**
   - `espnow_failsafe_mode = 0` (Default) or no local sensor: Force rotor position to 50% (Safety Open).
