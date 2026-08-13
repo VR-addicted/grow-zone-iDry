@@ -7,6 +7,7 @@
   <img src="https://img.shields.io/badge/Home%20Assistant-MQTT%20Auto%20Discovery-03a9f4.svg" alt="Home Assistant">
   <img src="https://img.shields.io/badge/OTA-1--Click%20GitHub%20Update-green.svg" alt="OTA Update">
   <img src="https://img.shields.io/badge/Display-e--Paper%20%2F%20TFT%20%2F%20Headless-green.svg" alt="Display">
+  <img src="https://img.shields.io/badge/Telemetry-Gapless%20Canvas%20Sparklines-blueviolet.svg" alt="Sparklines">
 </p>
 
 **iDry-26** ist eine hochentwickelte, ausfallsichere IoT-Klima- und Lüftungsklappensteuerung auf Basis des **YD-ESP32-S3**. Das System regelt Lüftungsrohre über Servo-Blendenverschlüsse vollautomatisch, schützt Erntegut und Kräuter vor Übertrocknung sowie Feuchtigkeitsinjektion (Thermodynamischer Feuchteschutz), kommuniziert verschlüsselt über **ESP-NOW Master/Slave-Kopplung**, bietet nahtlose **1-Klick Home Assistant Auto-Discovery** und unterstützt flexible Hardware-Ausbaustufen von *Headless* bis *Vollausbau*.
@@ -51,6 +52,36 @@ Im Gegensatz zu gewöhnlichen Umluftventilatoren im Trockenzelt (die die Luft nu
 | <img src="PICTURES/iDry-Web-UI-Settings-2.jpg" width="420" alt="Web UI Watchdogs Settings"> | <img src="PICTURES/iDry-Web-UI-Settings-3.jpg" width="420" alt="Web UI Fail Safe Settings"> |
 
 </div>
+
+---
+
+## 📊 High-Performance Telemetrie & Dynamic Web UI Features
+
+### 1. Doppel-Ringpuffer Telemetrie-Architektur (RAM)
+* **120-Minuten Ringpuffer (`history120mBuffer[120]`):** Speichert 2 Stunden Verlauf in minütlicher Auflösung.
+* **24-Stunden Ringpuffer (`history24hBuffer[288]`):** Speichert 24 Stunden Verlauf in 5-Minuten Auflösung.
+* **Proben-Umfang:** Erfasst Min/Max-Werte für Temp 0/1, Hum 0/1, Lux 0/1, Rotor-Stellung, ESP-NOW Link-Loss (0–60s), MQTT Link-Loss (0–60s) und RSSI dBm.
+* **Effizienter Speicherbedarf:** Nur ~21 KB RAM out of 320 KB (~28.4% Gesamt-RAM des ESP32-S3).
+
+### 2. Nahtlose Sparkline-Balkendiagramme & Spike Detection (Gelbe Kappen)
+* **Nahtlose Balken (Gapless Curves):** Exakte Pixel-Geometrie ($x_1 \to x_2$) ohne Lücken zwischen Kerzen erzeugt geschmeidige, gefüllte Flächenverläufe.
+* **Spike Detection (Gelbe Delta-Segment-Kappe):** Bei Temperatur und Luftfeuchte reicht der hellblaue Kerzenkörper von 0 bis zum **Minimum ($Min$)**. Das **gelbe Dach ($Min \to Max$)** misst die positive Schwankungsbreite $|Max - Min|$ der Minute und wandert stets nach oben!
+
+### 3. Mehrfarbiger RSSI-Verlauf & 2h System Status Karte
+* **Bunter RSSI-Gradient:** Vertikaler 4-Farben Canvas-Verlauf (Rot $\to$ Orange $\to$ Gelb $\to$ Grün) färbt RSSI-Balken entsprechend der Empfangsstärke.
+* **2-Stunden System Status Vorschau:** Das doppelt breite System Status Panel zeigt 120 Kerzen (2 Stunden minütlicher Verlauf) mit 30-Minuten Skalierungs-Ticks.
+
+### 4. Interaktives 24h Zoom Modal mit Touch/Hover Floating Badge
+* **Auto-Scroll zum Live-Moment:** Das Zoom-Fenster scrollt beim Öffnen automatisch an das rechte Live-Ende ($X = \text{max}$).
+* **Touch & Pointer Badge:** Beim Tippen am Smartphone oder Hovern am PC schlägt 15px oberhalb der Kerze ein schwebender Tooltip-Badge auf. Zeigt exakte Werte, Min/Max, Spike-Delta, Zeitversatz (`-3h 45m` / `JETZT`) und farbcodierten Rahmen.
+
+### 5. Dynamisches Mond-Favicon im Browser-Tab
+* **Live-Mondphase im Tab-Icon:** Ein clientseitiger Offscreen-Canvas (32x32 Pixel) rendert die echte Blendenöffnung live in das Browser-Tab-Icon (0 Byte ESP32 RAM-Verbrauch!).
+* **Theme-Awareness:** Dunkelblaues Abzeichen (`#171a33`) für Master, Dunkelrotes Abzeichen (`#3f0e0e`) für Slave.
+
+### 6. Automatische Lesezeichen-Namen & Pulsierendes Update-Red-Glow
+* **Auto-Bookmark Titel:** Der HTML-Header liefert dynamisch `<title>IDRY-26 Master</title>` bzw. `<title>IDRY-26 Slave</title>` aus.
+* **1s Rot-Pulsierender Update-Rahmen:** Ein schonender Hintergrund-Check (beim Boot, alle 10 min und beim Aufruf von `/firmware`) prüft GitHub-Releases. Liegt ein Update vor, pulsiert der Rahmen des `Firmware & OTA Update` Buttons im 1-Sekunden-Takt rot mit einem leuchtenden Halo.
 
 ---
 

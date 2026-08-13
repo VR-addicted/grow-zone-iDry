@@ -1,6 +1,6 @@
 # Project Workspace Customization Rules
 
-This workspace contains customized configuration rules for the YD-ESP32-S3, Waveshare 3.52" e-Paper display, ILI9341 TFT display, I2C sensor interfaces, analog potentiometers, LEDC servo motor control, ESP-NOW dual-mesh communication, Home Assistant MQTT auto-discovery, live OTA terminal, and ESP32 header validation.
+This workspace contains customized configuration rules for the YD-ESP32-S3, Waveshare 3.52" e-Paper display, ILI9341 TFT display, I2C sensor interfaces, analog potentiometers, LEDC servo motor control, ESP-NOW dual-mesh communication, Home Assistant MQTT auto-discovery, live OTA terminal, dual RAM ring buffers, gapless canvas sparklines, spike detection caps, dynamic moon favicon, and ESP32 header validation.
 
 ---
 
@@ -40,30 +40,43 @@ Do not change SPI, I2C, ADC, or actuator pin assignments:
 
 ---
 
+## High-Performance Web UI & Telemetry Architecture
+* **Dual RAM Ring-Buffer Layout:**
+  - `history120mBuffer[120]`: 120 samples x 1-min resolution (2 hours history for cards & system status).
+  - `history24hBuffer[288]`: 288 samples x 5-min resolution (24 hours history for zoom modal).
+  - Total RAM footprint: ~21 KB out of 320 KB (~28.4% total RAM used).
+* **Gapless Sparkline Geometry (Nahtlose Balken):** Bar charts calculated continuously from $x_1$ to $x_2$ with zero gap spacing, producing smooth connected curves.
+* **Spike Detection (Yellow Top Segment):** Temperature and Humidity sparklines feature a light blue base candle body ($0 \to Min$) plus a vibrant yellow cap ($Min \to Max$), measuring positive delta fluctuations within each bucket.
+* **RSSI Multi-Color Gradient:** Canvas linear vertical gradient (Red -> Orange -> Yellow -> Green) for signal strength bars.
+* **Double-Width 2h System Status Preview Card:** Displays 120 candles across full-width container with 30-min tick marks.
+* **Interactive 24h Zoom Modal & Floating Badge:** Auto-scrolls to rightmost live edge on open. Pointer/Touch handler calculates sample index and segment, showing floating popup badge 15px above candle top.
+* **Dynamic Moon Favicon:** 32x32 offscreen HTML5 canvas dynamically renders live shutter opening phase into browser tab icon (0 Byte ESP32 RAM).
+* **Dynamic Tab Title & Bookmarks:** Server emits `<title>IDRY-26 Master</title>` / `<title>IDRY-26 Slave</title>` for instant clean bookmarking.
+* **Pulsing Red OTA Update Border:** Background check (at boot, every 10 min, and `/firmware`) toggles a 1-second pulsing red border animation with glowing halo around the `Firmware & OTA Update` button on Settings page when an update is available.
+
+---
+
 ## Active Connection Watchdogs & Web UI Timeouts
 * **Gateway Watchdog:** Perform TCP client connection checks to `WiFi.gatewayIP()` on port 80 every 2 seconds. If a timeout (> 400ms) occurs, call `WiFi.disconnect(true)` immediately and initiate reconnect cycle.
 * **Web UI AJAX Timeout:** Fetch `/api/data` in Web UI using a 1000ms `AbortController` timeout to transition UI immediately into offline status when link drops.
-* **WLAN Connection Watchdog Alarm (`wlan_time_trap`):** Configurable slider (0–330s, default 120s). When connection drops, immediately play a double beep buzzer sequence (two 250ms tones at 500Hz with 100ms pause) and repeat at configured interval. Disabled when set to 0.
-* **RSSI Bargraph Indicator:** CSS-based 50px horizontal bar next to RSSI dBm values in Web UI. Dynamically scaled 0–100% (-100 to -30 dBm) with HSL/RGB color transitions (Red -> Orange -> Yellow -> Green -> Light Green).
-* **Weekly Reboot Watchdog:** Uptime monitored via `millis()`. When uptime exceeds 1 week (7 days / 604,800,000ms), check NTP clock. If NTP synced, delay reboot until 03:00 AM local time. If no NTP, reboot immediately (`ESP.restart()`). Countdown exposed in `/api/data`, Web UI, and MQTT.
+* **WLAN Connection Watchdog Alarm (`wlan_time_trap`):** Configurable slider (0–330s, default 120s). When connection drops, play double beep buzzer sequence and repeat at configured interval.
+* **Weekly Reboot Watchdog:** Uptime monitored via `millis()`. When uptime exceeds 1 week (7 days / 604,800,000ms), check NTP clock and reboot at 03:00 AM local time.
 
 ---
 
 ## ESP-NOW Master/Slave Mesh & Fail-Safe Protection
 * **Protocol Versioning:** Increment `localProtocolVersion` whenever `EspNowMessage` struct or command payload changes. Web UI alerts user on version mismatch.
-* **Fast-Track Channel Pairing:** Master broadcasts pairing beacons on Wi-Fi channel; Slave hops channels 1–13 every 1.2s to establish peer MAC and 128-bit CCMP LMK hardware encryption. Case-insensitive MAC comparison (`strcasecmp`) guarantees 100% reliable peer validation.
-* **Aggressive Reconnection (>20s):** On Slave devices, if no packet is received for >20 seconds, re-initialize ESP-NOW stack (`initEspNow()`) every 15 seconds without rebooting the MCU (preventing unwanted servo movements).
+* **Fast-Track Channel Pairing:** Master broadcasts pairing beacons on Wi-Fi channel; Slave hops channels 1–13 every 1.2s to establish peer MAC and 128-bit CCMP LMK hardware encryption. Case-insensitive MAC comparison (`strcasecmp`).
+* **Aggressive Reconnection (>20s):** On Slave devices, if no packet is received for >20 seconds, re-initialize ESP-NOW stack (`initEspNow()`) every 15 seconds without MCU reboot.
 * **2-Stage Fail-Safe Mode (>60s Connection Loss):**
-  - `espnow_failsafe_mode = 0` (Default) or no local sensor: Force rotor position to 50% (Safety Open) so ventilation is never choked. UI displays 3-line warning hint when no sensor is detected.
+  - `espnow_failsafe_mode = 0` (Default) or no local sensor: Force rotor position to 50% (Safety Open).
   - `espnow_failsafe_mode = 1` with active local sensor: Calculate rotor position locally using Slave's Poti A and local humidity sensor.
-  - Automatically resumes mirroring Master when connection is restored.
 
 ---
 
 ## Potentiometer Signal Conditioning & Discrete Zones
-* **EMA Low-Pass Filter:** Analog inputs filtered using Exponential Moving Average (EMA). Poti B (Gain Factor) uses heavy low-pass filtering ($\alpha = 0.05$) to eliminate ADC noise and prevent jitter.
-* **Integer Percentage Formatting:** Poti B Gain Factor is formatted and displayed as a clean whole integer percentage ($0 - 400\%$) across Web UI, JSON API, and MQTT.
-* **Poti A Discrete Zones & Hysteresis:** Poti A mapped to target humidity ($48 - 72\%$).
+* **EMA Low-Pass Filter:** Analog inputs filtered using Exponential Moving Average (EMA). Poti B uses heavy low-pass filtering ($\alpha = 0.05$).
+* **Poti A Discrete Zones:**
   - $\le 49\%$: Rigorously Closed ($0\%$ opening, displays `"Rigoros ZU"`).
   - $\ge 71\%$: Rigorously Open ($100\%$ opening, displays `"Rigoros AUF"`).
   - $50 - 70\%$: Closed-loop proportional humidity regulation.
@@ -71,27 +84,25 @@ Do not change SPI, I2C, ADC, or actuator pin assignments:
 ---
 
 ## Servo Motion Profiling & Powerdown Management
-* **Sine Easing (Sinusoidal Ramping):** Smooth acceleration and deceleration using sine curves (`0.5f * (1.0f - cos(t * PI))`). Short movements throttled to $<50\%$ max speed.
-* **Idle Powerdown:** Shut off PWM signal (`ledcWrite(SERVO_LEDC_CHANNEL, 0)`) after 1 second of inactivity once target angle is reached, eliminating idle servo buzzing and current draw.
-* **Update Rate Limiting:** Closed-loop servo updates throttled to user-configured interval (`sysConfig.servo_update_interval`, 1–30s, default 5s). Bypassed immediately when Poti A enters boundary zones or thermodynamic bypass triggers.
+* **Sine Easing:** Smooth acceleration and deceleration using sine curves (`0.5f * (1.0f - cos(t * PI))`).
+* **Idle Powerdown:** Shut off PWM signal (`ledcWrite(SERVO_LEDC_CHANNEL, 0)`) after 1 second of inactivity once target angle is reached.
+* **Update Rate Limiting:** Closed-loop servo updates throttled to user-configured interval (`sysConfig.servo_update_interval`, 1–30s, default 5s).
 
 ---
 
 ## Thermodynamic Feuchteschutz & Acoustic Alerts
-* **Thermodynamic Bypass (Saug-Sperre):** If outside humidity is higher than inside humidity or $>2\%$ above target, rotor forces fully closed ($0\%$) to prevent moisture influx. Accompanied by acoustic warning chime.
-* **Acoustic Signalization:** Passive buzzer handles boot melody (C5 -> G6), boundary chimes (descending/ascending arpeggios), drying progress alerts, and connection loss watchdog alarms.
+* **Thermodynamic Bypass (Saug-Sperre):** If outside humidity is higher than inside humidity or $>2\%$ above target, rotor forces fully closed ($0\%$).
+* **Acoustic Signalization:** Passive buzzer handles boot melody (C5 -> G6), boundary chimes, drying progress alerts, and connection loss watchdog alarms.
 
 ---
 
 ## Home Assistant MQTT Auto-Discovery & PubSubClient Buffer
-* **1-Click Auto-Discovery:** Automatically publishes discovery payloads for all entities (Rotor Position, Servo Angle, Temperature, Humidity, Dewpoint, VPD, RSSI, Potis A/B/C, Linkquality, BME280, SHT31, TSL2561 Lux/IR/Broadband).
-* **2048-Byte Buffer:** `mqttClient.setBufferSize(2048)` is enforced to prevent large JSON discovery and telemetry payloads from being dropped by PubSubClient's default 256-byte limit.
-* **Instant State Telemetry:** State telemetry is published immediately upon MQTT broker connection and updated periodically.
+* **1-Click Auto-Discovery:** Automatically publishes discovery payloads for all entities.
+* **2048-Byte Buffer:** `mqttClient.setBufferSize(2048)` is enforced to prevent large JSON payloads from being dropped.
 
 ---
 
 ## OTA Firmware Updates, Live Terminal & 16MB Partitioning
-* **Partition Table (`partitions.csv`):** 16MB dual OTA layout (`app0` 6.5MB at 0x10000, `app1` 6.5MB at 0x690000, `spiffs`/`littlefs` 2.87MB at 0xD10000). Dual OTA banks allow safe background bank switching and automatic fallback.
-* **1-Click GitHub Online OTA:** Checks `version.txt` on GitHub. Clicking **"🚀 Automatisch Online Updaten"** opens a live progress terminal log UI showing step-by-step connection, header verification, OTA flash percentage, and reboot notice.
-* **ESP32 Header Validation (Magic Byte `0xE9`):** Both Online OTA and Manual Upload verify byte 0 for ESP32 magic byte `0xE9` and minimum file size (>100KB) to prevent flashing corrupt or incorrect files.
-
+* **Partition Table (`partitions.csv`):** 16MB dual OTA layout (`app0` 6.5MB, `app1` 6.5MB, `spiffs`/`littlefs` 2.87MB).
+* **1-Click GitHub Online OTA:** Checks `version.txt` on GitHub. Live progress terminal log UI shows step-by-step connection, header verification, OTA flash percentage, and reboot notice.
+* **ESP32 Header Validation (Magic Byte `0xE9`):** Verifies byte 0 for ESP32 magic byte `0xE9` and minimum file size (>100KB).
