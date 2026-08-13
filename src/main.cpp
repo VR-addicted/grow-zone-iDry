@@ -21,7 +21,7 @@
 #include <WiFiClientSecure.h>
 
 // Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 40;
+const int localFirmwareVersion = 42;
 extern int cachedOnlineVersion;
 void checkGithubUpdateAsync(bool force = false);
 
@@ -160,13 +160,15 @@ Config sysConfig;
 bool isConfigLoaded = false;
 
 // Potentiometer States
-float potiAVal = 0.0;          // Target Humidity / Calculated Target RH: 0 - 100%
-float potiBVal = 0.0;          // Gain: 0 - 400%
-float potiCVal = 0.0;          // Calibration Offset: 0 to 120 deg
-float targetVpdVal = 0.0f;     // Target VPD in kPa (0.60 to 1.40)
+float potiAVal = 0.0;      // Target Humidity / Calculated Target RH: 0 - 100%
+float potiBVal = 0.0;      // Gain: 0 - 400%
+float potiCVal = 0.0;      // Calibration Offset: 0 to 120 deg
+float targetVpdVal = 0.0f; // Target VPD in kPa (0.60 to 1.40)
+float rawCalculatedRh =
+    0.0f; // Raw mathematically calculated target RH (unlimited)
 float effectiveTargetRh = 0.0f; // Calculated target RH clamped to hygro_limit
-float rotorPosition = 0.0;     // Logical Rotor opening: 0 - 100%
-bool bypassModeActive = false; // Thermodynamic bypass (notschließen) is active
+float rotorPosition = 0.0;      // Logical Rotor opening: 0 - 100%
+bool bypassModeActive = false;  // Thermodynamic bypass (notschließen) is active
 
 // Servo Motion Profiling (Ease-In-Ease-Out Softstart/Stop Ramping)
 float targetServoAngle = 0.0f;
@@ -360,7 +362,8 @@ void playWinnerMelody() {
 }
 
 float calculateSVP(float temp) {
-  if (isnan(temp)) return 0.0f;
+  if (isnan(temp))
+    return 0.0f;
   return 0.61078f * exp((17.27f * temp) / (temp + 237.3f));
 }
 
@@ -576,8 +579,12 @@ void initEspNow() {
       peerInfo.peer_addr[i] = (uint8_t)mac[i];
     }
 
-    uint8_t activeChannel = (WiFi.status() == WL_CONNECTED) ? WiFi.channel() : sysConfig.espnow_channel;
-    if (activeChannel == 0) activeChannel = (sysConfig.espnow_channel > 0) ? sysConfig.espnow_channel : 1;
+    uint8_t activeChannel = (WiFi.status() == WL_CONNECTED)
+                                ? WiFi.channel()
+                                : sysConfig.espnow_channel;
+    if (activeChannel == 0)
+      activeChannel =
+          (sysConfig.espnow_channel > 0) ? sysConfig.espnow_channel : 1;
 
     peerInfo.channel = activeChannel;
     peerInfo.ifidx = WIFI_IF_STA;
@@ -1117,8 +1124,10 @@ void updateServoRamping(bool updateTarget = false) {
   if (sysConfig.dry_strategy == 1) { // VPD Mode
     targetVpdVal = 0.60f + (smoothedA / 4095.0f) * 0.80f;
     targetVpdVal = (float)round(targetVpdVal * 100.0f) / 100.0f;
-    if (targetVpdVal < 0.60f) targetVpdVal = 0.60f;
-    if (targetVpdVal > 1.40f) targetVpdVal = 1.40f;
+    if (targetVpdVal < 0.60f)
+      targetVpdVal = 0.60f;
+    if (targetVpdVal > 1.40f)
+      targetVpdVal = 1.40f;
 
     float indoorTemp = NAN;
     if (tempSensors[0].active && !isnan(tempSensors[0].temperature)) {
@@ -1130,18 +1139,23 @@ void updateServoRamping(bool updateTarget = false) {
     if (!isnan(indoorTemp)) {
       float svp = calculateSVP(indoorTemp);
       float avpTarget = svp - targetVpdVal;
-      float rhCalc = (svp > 0.001f) ? (avpTarget / svp) * 100.0f : 60.0f;
-      if (rhCalc < 30.0f) rhCalc = 30.0f;
-      if (rhCalc > (float)sysConfig.hygro_limit) rhCalc = (float)sysConfig.hygro_limit;
+      rawCalculatedRh = (svp > 0.001f) ? (avpTarget / svp) * 100.0f : 60.0f;
+      float rhCalc = rawCalculatedRh;
+      if (rhCalc < 30.0f)
+        rhCalc = 30.0f;
+      if (rhCalc > (float)sysConfig.hygro_limit)
+        rhCalc = (float)sysConfig.hygro_limit;
       effectiveTargetRh = (float)round(rhCalc * 10.0f) / 10.0f;
     } else {
+      rawCalculatedRh = 60.0f;
       effectiveTargetRh = 60.0f;
     }
   } else {
     targetVpdVal = 0.0f;
+    rawCalculatedRh = potiAVal;
     effectiveTargetRh = potiAVal;
   }
-                                     // (180 - 121 = 59 max offset)
+  // (180 - 121 = 59 max offset)
 
   static float lastPotiAVal = -1.0f;
   static float lastPotiBVal = -1.0f;
@@ -1268,13 +1282,14 @@ void updateServoRamping(bool updateTarget = false) {
         }
 
         if (!isnan(hum_inside)) {
-          float activeTargetRh = (sysConfig.dry_strategy == 1) ? effectiveTargetRh : potiAVal;
+          float activeTargetRh =
+              (sysConfig.dry_strategy == 1) ? effectiveTargetRh : potiAVal;
 
           // Thermodynamic bypass check: If outside humidity is higher than
           // inside humidity OR outside humidity is more than 2% above the
           // target humidity, keep the rotor closed!
-          if (!isnan(hum_outside) &&
-              (hum_outside > hum_inside || hum_outside > (activeTargetRh + 2.0f))) {
+          if (!isnan(hum_outside) && (hum_outside > hum_inside ||
+                                      hum_outside > (activeTargetRh + 2.0f))) {
             rotorPosition =
                 0.0f; // Moisture loading threat! Keep shutter fully closed.
             if (!bypassModeActive) {
@@ -1452,6 +1467,7 @@ void handleGetData() {
   potis["poti_b_gain"] = potiBVal;
   potis["poti_c_cal_offset"] = potiCVal;
   potis["target_vpd"] = targetVpdVal;
+  potis["raw_calculated_rh"] = (float)round(rawCalculatedRh * 10.0f) / 10.0f;
   potis["effective_target_rh"] = effectiveTargetRh;
 
   doc["dry_strategy"] = sysConfig.dry_strategy;
@@ -1836,9 +1852,12 @@ void handlePortalRoot() {
                             <input type="radio" name="hygro_limit_radio" value="80" onchange="setDryStrategy(1, 80)" id="hl-80"> 80%
                         </label>
                     </div>
-                    <div style="font-size: 11px; color: #94a3b8; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 6px; display: flex; justify-content: space-between; align-items: center;">
-                        <span>Calculated Soll:</span>
-                        <span id="calc-soll-rh" style="font-weight: bold; color: #38bdf8; font-size: 12px;">--</span>
+                    <div style="font-size: 11px; color: #94a3b8; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 6px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <span>RH calculated soll:</span>
+                            <span id="calc-soll-rh" style="font-weight: bold; color: #38bdf8; font-size: 12px;">--</span>
+                        </div>
+                        <div id="calc-limit-notice" style="display: none; text-align: right; font-weight: bold; color: #f87171; font-size: 11px; margin-top: 3px;"></div>
                     </div>
                 </div>
                 <div class="card-title">Potentiometer</div>
@@ -2216,6 +2235,7 @@ void handlePortalRoot() {
                         let potValA = data.potentiometers.poti_a_target_hum;
                         let targetVpd = data.potentiometers.target_vpd || 1.00;
                         let effRh = data.potentiometers.effective_target_rh || 60.0;
+                        let rawRh = data.potentiometers.raw_calculated_rh !== undefined ? data.potentiometers.raw_calculated_rh : effRh;
                         let displayA = targetVpd.toFixed(2) + " kPa";
                         if (potValA <= 49.5) {
                             displayA = "Rigoros ZU";
@@ -2223,8 +2243,18 @@ void handlePortalRoot() {
                             displayA = "Rigoros AUF";
                         }
                         document.getElementById('poti-a').innerText = displayA;
+                        
                         let calcSollEl = document.getElementById('calc-soll-rh');
-                        if (calcSollEl) calcSollEl.innerText = effRh.toFixed(1) + " %";
+                        let calcNoticeEl = document.getElementById('calc-limit-notice');
+                        if (calcSollEl) calcSollEl.innerText = rawRh.toFixed(1) + " %";
+                        if (calcNoticeEl) {
+                            if (rawRh > hygroLim) {
+                                calcNoticeEl.style.display = 'block';
+                                calcNoticeEl.innerText = "(limited to " + hygroLim + "%)";
+                            } else {
+                                calcNoticeEl.style.display = 'none';
+                            }
+                        }
                     } else { // 60/60 Mode
                         if (btn6060) { btn6060.style.background = '#22c55e'; btn6060.style.color = '#ffffff'; }
                         if (btnVpd) { btnVpd.style.background = '#1e293b'; btnVpd.style.color = '#94a3b8'; }
@@ -2244,7 +2274,8 @@ void handlePortalRoot() {
                     document.getElementById('poti-c').innerText = data.potentiometers.poti_c_cal_offset.toFixed(0) + " °";
 
                     // Update Rotor & Servo card status dynamically
-                    document.getElementById('rotor-pos').innerText = data.rotor_position.toFixed(0) + " %";
+                    let rotorHTML = (data.espnow_role === 2 ? "<span style='color: #f87171; font-weight: bold; margin-right: 6px;'>[remote]</span>" : "") + data.rotor_position.toFixed(0) + " %";
+                    document.getElementById('rotor-pos').innerHTML = rotorHTML;
                     const m = document.getElementById('luna');
                     if (m) m.style.backgroundColor = '#191b28';
                     setMoon(data.rotor_position, data.espnow_role === 2);
@@ -2331,7 +2362,18 @@ void handlePortalRoot() {
                     document.getElementById('sys-ip').style.color = "#f87171";
                     document.getElementById('sys-rssi').innerText = "OFFLINE";
                     document.getElementById('sys-rssi').style.color = "#f87171";
+                    const rssiBar = document.getElementById('sys-rssi-bar');
+                    if (rssiBar) {
+                        rssiBar.style.width = "100%";
+                        rssiBar.style.backgroundColor = "#f87171";
+                    }
                     
+                    let espnowConn = document.getElementById('espnow-val-conn');
+                    if (espnowConn) {
+                        espnowConn.innerText = "Offline (Reconnecting)";
+                        espnowConn.style.color = "#f87171";
+                    }
+
                     let mqttStatus = document.getElementById('mqtt-status');
                     if (mqttStatus) {
                         mqttStatus.innerText = "reconnecting";
@@ -4187,9 +4229,7 @@ void handleDryStrategyApi() {
   server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
 
-void handleFavicon() {
-  server.send(204, "image/x-icon", "");
-}
+void handleFavicon() { server.send(204, "image/x-icon", ""); }
 
 // =====================================================================
 // FIRMWARE & ONLINE / MANUAL OTA UPDATE HANDLERS
@@ -5371,7 +5411,10 @@ void loop() {
       lastEspNowPingTime = millis();
 
       // Ensure Master peer is registered on current Wi-Fi channel
-      uint8_t masterChan = (WiFi.status() == WL_CONNECTED) ? WiFi.channel() : ((sysConfig.espnow_channel > 0) ? sysConfig.espnow_channel : 1);
+      uint8_t masterChan =
+          (WiFi.status() == WL_CONNECTED)
+              ? WiFi.channel()
+              : ((sysConfig.espnow_channel > 0) ? sysConfig.espnow_channel : 1);
       uint8_t peerMac[6];
       if (sscanf(sysConfig.espnow_peer_mac, "%x:%x:%x:%x:%x:%x", &peerMac[0],
                  &peerMac[1], &peerMac[2], &peerMac[3], &peerMac[4],
@@ -5398,7 +5441,8 @@ void loop() {
 
         esp_now_send(peerMac, (uint8_t *)&pingMsg, sizeof(EspNowMessage));
 
-        // If Slave hasn't responded for >3s, also broadcast ping on Master's channel
+        // If Slave hasn't responded for >3s, also broadcast ping on Master's
+        // channel
         if (lastEspNowRxTime == 0 || (millis() - lastEspNowRxTime > 3000)) {
           uint8_t bcastMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
           esp_now_peer_info_t bcastInfo;
@@ -5424,11 +5468,15 @@ void loop() {
   if (!isPairingActive && sysConfig.espnow_role == 2 &&
       strlen(sysConfig.espnow_peer_mac) > 0) {
 
-    // Continuously keep Slave's peer registration locked onto active Wi-Fi channel
+    // Continuously keep Slave's peer registration locked onto active Wi-Fi
+    // channel
     static unsigned long lastSlavePeerSyncTime = 0;
     if (millis() - lastSlavePeerSyncTime >= 1000) {
       lastSlavePeerSyncTime = millis();
-      uint8_t slaveChan = (WiFi.status() == WL_CONNECTED) ? WiFi.channel() : ((sysConfig.espnow_channel > 0) ? sysConfig.espnow_channel : 1);
+      uint8_t slaveChan =
+          (WiFi.status() == WL_CONNECTED)
+              ? WiFi.channel()
+              : ((sysConfig.espnow_channel > 0) ? sysConfig.espnow_channel : 1);
       uint8_t peerMac[6];
       if (sscanf(sysConfig.espnow_peer_mac, "%x:%x:%x:%x:%x:%x", &peerMac[0],
                  &peerMac[1], &peerMac[2], &peerMac[3], &peerMac[4],
@@ -5447,7 +5495,8 @@ void loop() {
       }
     }
 
-    // Only hop channels if NOT connected to Wi-Fi AP (prevent Wi-Fi disconnects)
+    // Only hop channels if NOT connected to Wi-Fi AP (prevent Wi-Fi
+    // disconnects)
     if (WiFi.status() != WL_CONNECTED) {
       if (lastEspNowRxTime == 0 || (millis() - lastEspNowRxTime > 3000)) {
         if (millis() - lastSlaveScanHopTime >= 350) {
@@ -5468,7 +5517,8 @@ void loop() {
     if (lastEspNowRxTime == 0 || (millis() - lastEspNowRxTime > 15000)) {
       if (millis() - lastEspNowReinitWatchdogTime >= 10000) {
         lastEspNowReinitWatchdogTime = millis();
-        Serial.println("[ESP-NOW Watchdog] Re-initializing ESP-NOW stack to restore link...");
+        Serial.println("[ESP-NOW Watchdog] Re-initializing ESP-NOW stack to "
+                       "restore link...");
         initEspNow();
       }
     }

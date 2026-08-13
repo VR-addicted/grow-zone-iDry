@@ -74,6 +74,15 @@ Do not change SPI, I2C, ADC, or actuator pin assignments:
 
 ---
 
+## VPD Strategy Engine & Hygro-Limit Mold Protection
+* **Dual Strategy Selection:** Configurable via Web UI or HTTP POST `/api/settings/dry_strategy?mode=X&limit=Y` (`sysConfig.dry_strategy`: 0 = 60/60 Mode, 1 = VPD Mode; `sysConfig.hygro_limit`: 70, 75, or 80%).
+* **Poti A Re-Mapping (VPD Mode):** 0% to 100% knob position maps to **0.60 kPa to 1.40 kPa**, with **1.00 kPa at 50% midpoint knob position**.
+* **Hygro-Limit Mold Protection Cap:** Target RH derived from VPD is clamped: $RH_{\text{effective}} = \min(RH_{\text{calculated}}, \text{HygroLimit})$.
+* **RAW Telemetry & Dynamic Notice:** Server transmits `raw_calculated_rh` alongside `effective_target_rh`. UI displays `RH calculated soll: XX.X %` with a dedicated red warning line `(limited to XX%)` when raw RH exceeds the Hygro Limit.
+* **Slave [remote] Indicator:** On Slave devices (`espnow_role === 2`), Rotor & Servo card explicitly displays `Rotor Stellung: [remote] X %` in bold soft red (`#f87171`).
+
+---
+
 ## Potentiometer Signal Conditioning & Discrete Zones
 * **EMA Low-Pass Filter:** Analog inputs filtered using Exponential Moving Average (EMA). Poti B uses heavy low-pass filtering ($\alpha = 0.05$).
 * **Poti A Discrete Zones:**

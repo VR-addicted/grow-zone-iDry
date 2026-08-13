@@ -46,6 +46,13 @@ Do not change the display SPI, I2C, potentiometer, or buzzer pins from their con
 * **Calibrated Limits:** Physical sweep is capped at **$121^\circ$**. The Poti C offset is mapped up to **$59^\circ$** to guarantee the servo never exceeds its physical $180^\circ$ limit.
 * **Poti A Steps (24 Steps):** Mapped to 48..72. Values <=49 are closed, values >=71 are open. Dazwischen is 50..70. In the Web UI, hide the raw numeric values when in boundary zones and display only "Rigoros ZU" and "Rigoros AUF".
 
+## VPD Strategy Engine & Hygro-Limit Mold Protection
+* **Dual Strategy Engine:** Toggleable on-the-fly via Web UI or HTTP POST `/api/settings/dry_strategy` (`sysConfig.dry_strategy`: 0 = 60/60 Mode, 1 = VPD Mode; `sysConfig.hygro_limit`: 70, 75, or 80%). Saved persistently in LittleFS `/config.json`. Factory reset restores defaults (`0` and `70`).
+* **Poti A Re-Mapping (VPD Mode):** 0% to 100% knob position maps to **0.60 kPa to 1.40 kPa**, with **1.00 kPa at 50% midpoint knob position**. Boundary zones ("Rigoros ZU" <= 49.5%, "Rigoros AUF" >= 70.5%) remain fully active.
+* **Hygro-Limit Mold Protection Cap:** Calculated target RH from target VPD is clamped: $RH_{\text{effective}} = \min(RH_{\text{calculated}}, \text{HygroLimit})$.
+* **RAW Telemetry & Dedicated Notice:** Server transmits `raw_calculated_rh` alongside `effective_target_rh`. Web UI displays `RH calculated soll: XX.X %` with a dedicated right-aligned red warning line `(limited to XX%)` below when raw RH exceeds the Hygro Limit.
+* **Slave [remote] Indicator:** On Slave devices (`espnow_role === 2`), Rotor & Servo card explicitly displays `Rotor Stellung: [remote] X %` in bold soft red (`#f87171`).
+
 ## Thermodynamic Shutter Logic
 * **Sensor Roles:** `tempSensors[0]` is Inside/Master; `tempSensors[1]` is Outside.
 * **Priority Sorting:** In `scanI2C()`, if a BME280 (which has a built-in barometer/pressure sensor) is detected on position 1 while position 0 is not a BME280, they must be swapped to promote BME280 to the Inside/Master slot.

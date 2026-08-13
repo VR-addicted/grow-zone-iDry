@@ -14,6 +14,21 @@
 
 ---
 
+## 🔥 **HIGHLIGHT FEATURE:** Scientific VPD Strategy & Hygro-Limit Mold Protection
+
+**iDry-26** unterstützt zwei wählbare Trocknungs-Strategien, die stufenlos per Umschalter im Web-Dashboard gewählt werden können:
+
+1. **60/60 Mode (Klassische Feuchteregelung):**  
+   Poti A bestimmt direkt die Wunsch-Luftfeuchtigkeit (z. B. 60% RH).
+2. **VPD Target Mode (Wissenschaftliche Sättigungsdefizit-Regelung):**  
+   - **Präzise VPD-Skalierung auf Poti A:** Der Drehknopf regelt stufenlos den **Wunsch-VPD von 0.60 kPa bis 1.40 kPa**, mit **1.00 kPa exakt in der physikalischen Mittelstellung (50%)**.
+   - **Automatische Temperatur-Kompensation:** Aus der aktuellen Innentemperatur berechnet das System in Echtzeit die exakt benötigten Feuchteprozente ($RH_{\text{calculated}}$), um deinen Wunsch-VPD perfekt einzuregeln.
+   - **Hygro-Limit Schimmelschutz-Garantie (70% / 75% / 80%):** Per Radio-Button wählbarer Maximalwert für die relative Luftfeuchte. Das System berechnet die Zielfeuchte, kappt sie jedoch **unwiderruflich bei deinem eingestellten Hygro-Limit** ($RH_{\text{effective}} = \min(RH_{\text{calculated}}, \text{Limit})$). Somit wird Schimmelbildung selbst bei extrem schwankenden Temperaturen zu 100% ausgeschlossen!
+   - **Transparente RAW-Telemetrie:** Im Dashboard wird live der un-gekapte mathematische Sollwert angezeigt (`RH calculated soll: 73.4 %`), inklusive dynamischem rotem Hinweis `(limited to 70%)`, wenn die Schimmelbremse aktiv greift.
+   - **Persistent & Ausfallsicher:** Die gewählte Strategie und das Hygro-Limit werden dauerhaft in LittleFS gespeichert und überleben Stromausfälle sowie Neustarts ohne Datenverlust.
+
+---
+
 ## 🎯 Der tiefere Sinn: Hermetischer Verschluss gegen Übertrocknung
 
 Im Gegensatz zu gewöhnlichen Umluftventilatoren im Trockenzelt (die die Luft nur intern umwälzen, aber keinen Verschluss zur Außenwelt darstellen) ist **iDry-26 ein echtes mechanisches Ventil**:
