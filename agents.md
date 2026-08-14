@@ -65,7 +65,7 @@ Do not change SPI, I2C, ADC, or actuator pin assignments:
 ---
 
 ## ESP-NOW Master/Slave Mesh & Fail-Safe Protection
-* **Protocol Versioning:** Increment `localProtocolVersion` whenever `EspNowMessage` struct or command payload changes. Web UI alerts user on version mismatch.
+* **Protocol Versioning (V3):** Increment `localProtocolVersion` (currently V3) whenever `EspNowMessage` struct or command payload changes. `EspNowMessage` includes `uint8_t dry_strategy` to continuously sync strategy (0 = 60/60, 1 = VPD) every 1 second. Web UI alerts user on version mismatch.
 * **Fast-Track Channel Pairing:** Master broadcasts pairing beacons on Wi-Fi channel; Slave hops channels 1–13 every 1.2s to establish peer MAC address binding and protocol version verification (`peerInfo.encrypt = false` to guarantee 0% packet loss during Wi-Fi channel hopping). Case-insensitive MAC comparison (`strcasecmp`).
 * **Aggressive Reconnection (>20s):** On Slave devices, if no packet is received for >20 seconds, re-initialize ESP-NOW stack (`initEspNow()`) every 15 seconds without MCU reboot.
 * **2-Stage Fail-Safe Mode (>60s Connection Loss):**
@@ -79,7 +79,8 @@ Do not change SPI, I2C, ADC, or actuator pin assignments:
 * **Poti A Re-Mapping (VPD Mode):** 0% to 100% knob position maps to **0.60 kPa to 1.40 kPa**, with **1.00 kPa at 50% midpoint knob position**.
 * **Hygro-Limit Mold Protection Cap:** Target RH derived from VPD is clamped: $RH_{\text{effective}} = \min(RH_{\text{calculated}}, \text{HygroLimit})$.
 * **RAW Telemetry & Dynamic Notice:** Server transmits `raw_calculated_rh` alongside `effective_target_rh`. UI displays `RH calculated soll: XX.X %` with a dedicated red warning line `(limited to XX%)` when raw RH exceeds the Hygro Limit.
-* **Slave [remote] Indicator:** On Slave devices (`espnow_role === 2`), Rotor & Servo card explicitly displays `Rotor Stellung: [remote] X %` in bold soft red (`#f87171`).
+* **Slave [remote] Indicator & Adaptive Use-Case UI:** On Slave devices (`espnow_role === 2`), Rotor & Servo card explicitly displays `Rotor Stellung: [remote] X %` in bold soft red (`#f87171`). When no active temperature/humidity sensor is connected, Dry Strategy controls and Hygro-Limit boxes are automatically hidden to keep the UI clean. On Slaves without sensors, interactive strategy buttons are replaced by a non-clickable double-width badge (`REMOTE 60/60`, `REMOTE VPD`, or `NOTFALL 50% OPEN` / `NOTFALL 60/60` / `NOTFALL VPD`).
+* **Unfiltered Realtime Telemetry Benchmark:** `avgEspNowIntervalMs` outputs raw, unfiltered millisecond delta between 1s sync packets (`msg.command == 2`) without low-pass smoothing. Offline threshold triggers after 3.5s (3 missed heartbeats).
 
 ---
 

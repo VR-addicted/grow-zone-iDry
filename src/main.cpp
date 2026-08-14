@@ -21,7 +21,7 @@
 #include <WiFiClientSecure.h>
 
 // Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 42;
+const int localFirmwareVersion = 53;
 extern int cachedOnlineVersion;
 void checkGithubUpdateAsync(bool force = false);
 
@@ -184,20 +184,23 @@ unsigned long servoFinishedTime = 0;
 // ESP-NOW & PAIRING STATE MACHINE & WI-FI CHANNEL HOPS
 // =====================================================================
 struct __attribute__((packed)) EspNowMessage {
-  uint8_t pv;      // Protocol version (currently 1)
+  uint8_t pv;      // Protocol version (currently 3)
   uint8_t type;    // 0 = Pairing Beacon, 1 = Pairing Response, 2 = Command/Data
   char key[33];    // LMK hex string exchanged during pairing
-  uint8_t command; // 0 = None, 1 = Play Winner Melody, 2 = Ping-Request, 3 =
-                   // Ping-Reply
-  float value;     // Numeric payload value
+  uint8_t command; // 0 = None, 1 = Play Winner Melody, 2 = Ping-Request/Data
+                   // Sync, 3 = Ping-Reply
+  float value;     // Numeric payload value (rotorPosition)
+  uint8_t dry_strategy; // Dry Strategy: 0 = 60/60 Mode, 1 = VPD Mode
 };
 
-const uint8_t localProtocolVersion = 2;
-uint8_t remoteProtocolVersion = 1;
+const uint8_t localProtocolVersion = 3;
+uint8_t remoteProtocolVersion = 0;
 bool protocolVersionMismatch = false;
 uint32_t avgEspNowIntervalMs = 1000;
+uint8_t remoteMasterDryStrategy = 0;
 
 unsigned long lastEspNowRxTime = 0;
+unsigned long lastEspNowTxSuccessTime = 0;
 bool isPairingActive = false;
 unsigned long pairingStartTime = 0;
 int currentPairingChannel = 1;
@@ -375,8 +378,11 @@ void onEspNowDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
   char macStr[18];
   sprintf(macStr, "%02X:%02X:%02X:%02X:%02X:%02X", mac_addr[0], mac_addr[1],
           mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
-  Serial.printf("[ESP-NOW] Message sent to %s, status: %s\n", macStr,
-                (status == ESP_NOW_SEND_SUCCESS) ? "SUCCESS" : "FAIL");
+  if (status == ESP_NOW_SEND_SUCCESS && sysConfig.espnow_role == 1 &&
+      strlen(sysConfig.espnow_peer_mac) > 0 &&
+      strcasecmp(macStr, sysConfig.espnow_peer_mac) == 0) {
+    lastEspNowTxSuccessTime = millis();
+  }
 }
 
 void onEspNowDataRecv(const uint8_t *mac_addr, const uint8_t *data,
@@ -399,12 +405,6 @@ void onEspNowDataRecv(const uint8_t *mac_addr, const uint8_t *data,
   bool isFromPeer = (strlen(sysConfig.espnow_peer_mac) > 0 &&
                      strcasecmp(macStr, sysConfig.espnow_peer_mac) == 0);
   if (isFromPeer || isPairingActive) {
-    if (lastEspNowRxTime != 0) {
-      unsigned long diff = millis() - lastEspNowRxTime;
-      if (diff < 5000) {
-        avgEspNowIntervalMs = (avgEspNowIntervalMs * 3 + diff) / 4;
-      }
-    }
     lastEspNowRxTime =
         millis(); // Refresh RX timestamp for every received packet
 
@@ -520,15 +520,18 @@ void onEspNowDataRecv(const uint8_t *mac_addr, const uint8_t *data,
       } else if (msg.command == 2) {
         if (sysConfig.espnow_role == 2) {
           rotorPosition = msg.value;
+          remoteMasterDryStrategy = msg.dry_strategy;
+          static unsigned long lastSlaveSyncRecvTime = 0;
+          if (lastSlaveSyncRecvTime == 0) {
+            lastSlaveSyncRecvTime = millis();
+          } else {
+            unsigned long diff = millis() - lastSlaveSyncRecvTime;
+            if (diff >= 750 && diff <= 4000) {
+              avgEspNowIntervalMs = diff;
+              lastSlaveSyncRecvTime = millis();
+            }
+          }
         }
-        // Reply with Ping-Response (command 3)
-        EspNowMessage response;
-        response.pv = localProtocolVersion;
-        response.type = 2;
-        strlcpy(response.key, sysConfig.espnow_lmk, sizeof(response.key));
-        response.command = 3; // Ping-Reply
-        response.value = 0;
-        esp_now_send(mac_addr, (uint8_t *)&response, sizeof(EspNowMessage));
       }
     } else {
       Serial.printf("[ESP-NOW] Blocked command from unpaired peer %s\n",
@@ -607,6 +610,7 @@ void initEspNow() {
       strlcpy(pingMsg.key, sysConfig.espnow_lmk, sizeof(pingMsg.key));
       pingMsg.command = 2; // Ping-Request
       pingMsg.value = rotorPosition;
+      pingMsg.dry_strategy = (uint8_t)sysConfig.dry_strategy;
       esp_now_send(peerInfo.peer_addr, (uint8_t *)&pingMsg,
                    sizeof(EspNowMessage));
     }
@@ -1470,7 +1474,11 @@ void handleGetData() {
   potis["raw_calculated_rh"] = (float)round(rawCalculatedRh * 10.0f) / 10.0f;
   potis["effective_target_rh"] = effectiveTargetRh;
 
-  doc["dry_strategy"] = sysConfig.dry_strategy;
+  bool isSlaveConnected =
+      (sysConfig.espnow_role == 2 && lastEspNowRxTime != 0 &&
+       (millis() - lastEspNowRxTime <= 15000));
+  doc["dry_strategy"] =
+      isSlaveConnected ? remoteMasterDryStrategy : sysConfig.dry_strategy;
   doc["hygro_limit"] = sysConfig.hygro_limit;
 
   doc["rotor_position"] = rotorPosition;
@@ -1483,11 +1491,21 @@ void handleGetData() {
           ? (WiFi.status() == WL_CONNECTED ? WiFi.channel() : 1)
           : (isPairingActive ? currentPairingChannel
                              : sysConfig.espnow_channel);
-  doc["espnow_last_seen_ms"] =
-      (lastEspNowRxTime == 0) ? -1 : (int)(millis() - lastEspNowRxTime);
+  long lastSeenMs = -1;
+  if (sysConfig.espnow_role == 1) {
+    lastSeenMs = (lastEspNowTxSuccessTime == 0)
+                     ? -1
+                     : (long)(millis() - lastEspNowTxSuccessTime);
+  } else if (sysConfig.espnow_role == 2) {
+    lastSeenMs =
+        (lastEspNowRxTime == 0) ? -1 : (long)(millis() - lastEspNowRxTime);
+  }
+  doc["espnow_last_seen_ms"] = lastSeenMs;
   doc["espnow_interval_ms"] = avgEspNowIntervalMs;
-  doc["espnow_pv_mismatch"] = (strlen(sysConfig.espnow_peer_mac) > 0) &&
-                              (remoteProtocolVersion > 0) &&
+  bool isEspNowOnline = (sysConfig.espnow_role > 0) &&
+                        (strlen(sysConfig.espnow_peer_mac) > 0) &&
+                        (lastSeenMs != -1) && (lastSeenMs <= 3500);
+  doc["espnow_pv_mismatch"] = isEspNowOnline && (remoteProtocolVersion > 0) &&
                               (remoteProtocolVersion != localProtocolVersion);
   doc["espnow_remote_pv"] = remoteProtocolVersion;
   doc["espnow_local_pv"] = localProtocolVersion;
@@ -1834,10 +1852,13 @@ void handlePortalRoot() {
         <h1 id="device-title">IDRY-26 Loading...</h1>
         <div class="grid">
             <div class="card">
-                <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #94a3b8; font-weight: 600; margin-bottom: 8px;">Dry Strategy</div>
-                <div style="display: flex; gap: 8px; margin-bottom: 12px;">
-                    <button id="strat-btn-6060" onclick="setDryStrategy(0, currentHygroLimit)" style="flex: 1; padding: 10px 0; background: #22c55e; border: 1px solid rgba(255,255,255,0.2); color: white; font-weight: bold; border-radius: 8px; cursor: pointer; transition: all 0.2s;">60/60</button>
-                    <button id="strat-btn-vpd" onclick="setDryStrategy(1, currentHygroLimit)" style="flex: 1; padding: 10px 0; background: #1e293b; border: 1px solid rgba(255,255,255,0.15); color: #94a3b8; font-weight: bold; border-radius: 8px; cursor: pointer; transition: all 0.2s;">VPD</button>
+                <div id="strat-section" style="margin-bottom: 12px;">
+                    <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #94a3b8; font-weight: 600; margin-bottom: 8px;">Dry Strategy</div>
+                    <div style="display: flex; gap: 8px;">
+                        <button id="strat-btn-6060" onclick="setDryStrategy(0, currentHygroLimit)" style="flex: 1; padding: 10px 0; background: #22c55e; border: 1px solid rgba(255,255,255,0.2); color: white; font-weight: bold; border-radius: 8px; cursor: pointer; transition: all 0.2s;">60/60</button>
+                        <button id="strat-btn-vpd" onclick="setDryStrategy(1, currentHygroLimit)" style="flex: 1; padding: 10px 0; background: #1e293b; border: 1px solid rgba(255,255,255,0.15); color: #94a3b8; font-weight: bold; border-radius: 8px; cursor: pointer; transition: all 0.2s;">VPD</button>
+                        <div id="strat-btn-remote" style="display: none; flex: 1; padding: 10px 0; background: rgba(15,23,42,0.6); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; text-align: center; font-size: 13px; font-weight: bold; user-select: none;">REMOTE 60/60</div>
+                    </div>
                 </div>
                 <div id="hygro-limit-box" style="display: none; background: rgba(15,23,42,0.5); padding: 10px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08); margin-bottom: 14px;">
                     <div style="font-size: 11px; color: #94a3b8; font-weight: 600; margin-bottom: 6px;">Hygro Limit (Schimmelschutz):</div>
@@ -2217,58 +2238,127 @@ void handlePortalRoot() {
 
                     let btn6060 = document.getElementById('strat-btn-6060');
                     let btnVpd = document.getElementById('strat-btn-vpd');
+                    let btnRemote = document.getElementById('strat-btn-remote');
+                    let stratSection = document.getElementById('strat-section');
                     let hlBox = document.getElementById('hygro-limit-box');
                     let potiALabel = document.getElementById('poti-a-label');
                     let hl70 = document.getElementById('hl-70');
                     let hl75 = document.getElementById('hl-75');
                     let hl80 = document.getElementById('hl-80');
 
-                    if (dryStrat === 1) { // VPD Mode
-                        if (btnVpd) { btnVpd.style.background = '#22c55e'; btnVpd.style.color = '#ffffff'; }
-                        if (btn6060) { btn6060.style.background = '#1e293b'; btn6060.style.color = '#94a3b8'; }
-                        if (hlBox) hlBox.style.display = 'block';
-                        if (potiALabel) potiALabel.innerText = 'Soll VPD:';
-                        if (hygroLim === 80) { if (hl80) hl80.checked = true; }
-                        else if (hygroLim === 75) { if (hl75) hl75.checked = true; }
-                        else { if (hl70) hl70.checked = true; }
-
-                        let potValA = data.potentiometers.poti_a_target_hum;
-                        let targetVpd = data.potentiometers.target_vpd || 1.00;
-                        let effRh = data.potentiometers.effective_target_rh || 60.0;
-                        let rawRh = data.potentiometers.raw_calculated_rh !== undefined ? data.potentiometers.raw_calculated_rh : effRh;
-                        let displayA = targetVpd.toFixed(2) + " kPa";
-                        if (potValA <= 49.5) {
-                            displayA = "Rigoros ZU";
-                        } else if (potValA >= 70.5) {
-                            displayA = "Rigoros AUF";
-                        }
-                        document.getElementById('poti-a').innerText = displayA;
-                        
-                        let calcSollEl = document.getElementById('calc-soll-rh');
-                        let calcNoticeEl = document.getElementById('calc-limit-notice');
-                        if (calcSollEl) calcSollEl.innerText = rawRh.toFixed(1) + " %";
-                        if (calcNoticeEl) {
-                            if (rawRh > hygroLim) {
-                                calcNoticeEl.style.display = 'block';
-                                calcNoticeEl.innerText = "(limited to " + hygroLim + "%)";
-                            } else {
-                                calcNoticeEl.style.display = 'none';
+                    // Check if any temperature/humidity sensor is connected & active
+                    let hasAnyTempSensor = false;
+                    if (data.sensors && data.sensors.length > 0) {
+                        for (let i = 0; i < data.sensors.length; i++) {
+                            if (data.sensors[i] && data.sensors[i].temperature !== undefined && data.sensors[i].temperature !== null) {
+                                hasAnyTempSensor = true;
+                                break;
                             }
                         }
-                    } else { // 60/60 Mode
-                        if (btn6060) { btn6060.style.background = '#22c55e'; btn6060.style.color = '#ffffff'; }
-                        if (btnVpd) { btnVpd.style.background = '#1e293b'; btnVpd.style.color = '#94a3b8'; }
-                        if (hlBox) hlBox.style.display = 'none';
-                        if (potiALabel) potiALabel.innerText = 'Sollwert Feuchte (A):';
+                    }
 
-                        let potValA = data.potentiometers.poti_a_target_hum;
-                        let displayA = potValA.toFixed(0) + " %";
-                        if (potValA <= 49.5) {
-                            displayA = "Rigoros ZU";
-                        } else if (potValA >= 70.5) {
-                            displayA = "Rigoros AUF";
+                    if (!hasAnyTempSensor) {
+                        if (data.espnow_role === 2) { // Slave without sensors
+                            let isOnline = (data.espnow_last_seen_ms !== -1) && (data.espnow_last_seen_ms <= 3500);
+                            if (stratSection) stratSection.style.display = 'block';
+                            if (btn6060) btn6060.style.display = 'none';
+                            if (btnVpd) btnVpd.style.display = 'none';
+                            if (btnRemote) {
+                                btnRemote.style.display = 'block';
+                                if (isOnline) {
+                                    if (dryStrat === 1) {
+                                        btnRemote.innerHTML = "<span style='color: #f87171; font-weight: bold;'>REMOTE</span> VPD";
+                                    } else {
+                                        btnRemote.innerHTML = "<span style='color: #38bdf8; font-weight: bold;'>REMOTE</span> 60/60";
+                                    }
+                                } else {
+                                    let localStratText = "";
+                                    if (data.espnow_failsafe_mode === 0) {
+                                        localStratText = "50% OPEN";
+                                    } else {
+                                        localStratText = (data.dry_strategy === 1) ? "VPD" : "60/60";
+                                    }
+                                    btnRemote.innerHTML = "<span style='color: #f87171; font-weight: bold;'>NOTFALL</span> " + localStratText;
+                                }
+                            }
+                            if (hlBox) hlBox.style.display = 'none';
+                            if (potiALabel) potiALabel.innerText = (dryStrat === 1) ? 'Soll VPD:' : 'Sollwert Feuchte (A):';
+
+                            let potValA = data.potentiometers.poti_a_target_hum;
+                            let displayA = potValA.toFixed(0) + " %";
+                            if (potValA <= 49.5) {
+                                displayA = "Rigoros ZU";
+                            } else if (potValA >= 70.5) {
+                                displayA = "Rigoros AUF";
+                            }
+                            document.getElementById('poti-a').innerText = displayA;
+                        } else { // Master / Standalone without sensors: hide strategy section entirely
+                            if (stratSection) stratSection.style.display = 'none';
+                            if (hlBox) hlBox.style.display = 'none';
+                            if (potiALabel) potiALabel.innerText = 'Sollwert Feuchte (A):';
+
+                            let potValA = data.potentiometers.poti_a_target_hum;
+                            let displayA = potValA.toFixed(0) + " %";
+                            if (potValA <= 49.5) {
+                                displayA = "Rigoros ZU";
+                            } else if (potValA >= 70.5) {
+                                displayA = "Rigoros AUF";
+                            }
+                            document.getElementById('poti-a').innerText = displayA;
                         }
-                        document.getElementById('poti-a').innerText = displayA;
+                    } else { // Has local temp sensor (Master, Standalone or Slave with sensors)
+                        if (stratSection) stratSection.style.display = 'block';
+                        if (btnRemote) btnRemote.style.display = 'none';
+                        if (btnVpd) btnVpd.style.display = 'block';
+                        if (btn6060) btn6060.style.display = 'block';
+
+                        if (dryStrat === 1) { // VPD Mode
+                            if (btnVpd) { btnVpd.style.background = '#22c55e'; btnVpd.style.color = '#ffffff'; }
+                            if (btn6060) { btn6060.style.background = '#1e293b'; btn6060.style.color = '#94a3b8'; }
+                            if (hlBox) hlBox.style.display = 'block';
+                            if (potiALabel) potiALabel.innerText = 'Soll VPD:';
+                            if (hygroLim === 80) { if (hl80) hl80.checked = true; }
+                            else if (hygroLim === 75) { if (hl75) hl75.checked = true; }
+                            else { if (hl70) hl70.checked = true; }
+
+                            let potValA = data.potentiometers.poti_a_target_hum;
+                            let targetVpd = data.potentiometers.target_vpd || 1.00;
+                            let effRh = data.potentiometers.effective_target_rh || 60.0;
+                            let rawRh = data.potentiometers.raw_calculated_rh !== undefined ? data.potentiometers.raw_calculated_rh : effRh;
+                            let displayA = targetVpd.toFixed(2) + " kPa";
+                            if (potValA <= 49.5) {
+                                displayA = "Rigoros ZU";
+                            } else if (potValA >= 70.5) {
+                                displayA = "Rigoros AUF";
+                            }
+                            document.getElementById('poti-a').innerText = displayA;
+                            
+                            let calcSollEl = document.getElementById('calc-soll-rh');
+                            let calcNoticeEl = document.getElementById('calc-limit-notice');
+                            if (calcSollEl) calcSollEl.innerText = rawRh.toFixed(1) + " %";
+                            if (calcNoticeEl) {
+                                if (rawRh > hygroLim) {
+                                    calcNoticeEl.style.display = 'block';
+                                    calcNoticeEl.innerText = "(limited to " + hygroLim + "%)";
+                                } else {
+                                    calcNoticeEl.style.display = 'none';
+                                }
+                            }
+                        } else { // 60/60 Mode
+                            if (btn6060) { btn6060.style.background = '#22c55e'; btn6060.style.color = '#ffffff'; }
+                            if (btnVpd) { btnVpd.style.background = '#1e293b'; btnVpd.style.color = '#94a3b8'; }
+                            if (hlBox) hlBox.style.display = 'none';
+                            if (potiALabel) potiALabel.innerText = 'Sollwert Feuchte (A):';
+
+                            let potValA = data.potentiometers.poti_a_target_hum;
+                            let displayA = potValA.toFixed(0) + " %";
+                            if (potValA <= 49.5) {
+                                displayA = "Rigoros ZU";
+                            } else if (potValA >= 70.5) {
+                                displayA = "Rigoros AUF";
+                            }
+                            document.getElementById('poti-a').innerText = displayA;
+                        }
                     }
                     document.getElementById('poti-b').innerText = data.potentiometers.poti_b_gain.toFixed(0) + " %";
                     document.getElementById('poti-c').innerText = data.potentiometers.poti_c_cal_offset.toFixed(0) + " °";
@@ -2292,7 +2382,7 @@ void handlePortalRoot() {
                         if (lastSeenMs === -1) {
                             connEl.innerText = "Keine Verbindung";
                             connEl.style.color = "#f87171";
-                        } else if (lastSeenMs <= 15000) {
+                        } else if (lastSeenMs <= 3500) {
                             let intervalSec = ((data.espnow_interval_ms || 1000) / 1000).toFixed(3);
                             connEl.innerText = "Online (HB " + intervalSec + "s)";
                             connEl.style.color = "#4ade80";
@@ -4387,9 +4477,9 @@ void handleFirmwarePage() {
         <div class="card">
             <div class="card-title">Manuelles Firmware File Flash</div>
             <p class="info-text">Lokale Firmware-Datei (.bin) auswählen und direkt auf den ESP32 hochladen:</p>
-            <form method="POST" action="/firmware/upload" enctype="multipart/form-data">
+            <form method="POST" action="/firmware/upload" enctype="multipart/form-data" onsubmit="triggerFlashGlow()">
                 <input type="file" name="update" accept=".bin" required>
-                <button type="submit" class="btn btn-nav" style="background: rgba(99, 102, 241, 0.2); border-color: rgba(99, 102, 241, 0.4); color: #a5b4fc;">
+                <button type="submit" id="btn-flash-bin" class="btn btn-nav" style="background: rgba(99, 102, 241, 0.2); border-color: rgba(99, 102, 241, 0.4); color: #a5b4fc; transition: all 0.3s ease;">
                     Firmware .bin Flashen
                 </button>
             </form>
@@ -4400,6 +4490,25 @@ void handleFirmwarePage() {
             <a href="/" class="btn btn-nav" style="flex: 1;">Zurueck zum Monitor</a>
         </div>
     </div>
+    <script>
+        function triggerFlashGlow() {
+            const btn = document.getElementById('btn-flash-bin');
+            if (btn) {
+                btn.style.background = 'linear-gradient(135deg, #10b981 0%, #059669 100%)';
+                btn.style.borderColor = '#22c55e';
+                btn.style.color = '#ffffff';
+                btn.style.boxShadow = '0 0 20px rgba(34, 197, 94, 0.85), 0 0 35px rgba(34, 197, 94, 0.45)';
+                btn.innerText = '⚡ Flashen gestartet...';
+                setTimeout(() => {
+                    btn.style.background = 'rgba(99, 102, 241, 0.2)';
+                    btn.style.borderColor = 'rgba(99, 102, 241, 0.4)';
+                    btn.style.color = '#a5b4fc';
+                    btn.style.boxShadow = 'none';
+                    btn.innerText = 'Firmware .bin Flashen';
+                }, 3000);
+            }
+        }
+    </script>
 </body>
 </html>
 )rawhtml";
@@ -5720,6 +5829,36 @@ void loop() {
     // Read real sensors every 1 second (keeps Web UI and MQTT fresh)
     readSensors();
     updateHistoryAccumulators1s();
+
+    // Master: Broadcast continuous ESP-NOW sync update (rotorPosition +
+    // dry_strategy) every 1 second
+    if (sysConfig.espnow_role == 1 && strlen(sysConfig.espnow_peer_mac) > 0 &&
+        !isPairingActive) {
+      uint8_t peerMac[6];
+      if (sscanf(sysConfig.espnow_peer_mac, "%x:%x:%x:%x:%x:%x", &peerMac[0],
+                 &peerMac[1], &peerMac[2], &peerMac[3], &peerMac[4],
+                 &peerMac[5]) == 6) {
+        EspNowMessage syncMsg;
+        syncMsg.pv = localProtocolVersion;
+        syncMsg.type = 2; // Data/Command
+        strlcpy(syncMsg.key, sysConfig.espnow_lmk, sizeof(syncMsg.key));
+        syncMsg.command = 2; // Data Sync
+        syncMsg.value = rotorPosition;
+        syncMsg.dry_strategy = (uint8_t)sysConfig.dry_strategy;
+        esp_now_send(peerMac, (uint8_t *)&syncMsg, sizeof(EspNowMessage));
+
+        static unsigned long lastMasterSyncSendTime = 0;
+        if (lastMasterSyncSendTime == 0) {
+          lastMasterSyncSendTime = millis();
+        } else {
+          unsigned long diff = millis() - lastMasterSyncSendTime;
+          if (diff >= 750 && diff <= 4000) {
+            avgEspNowIntervalMs = diff;
+            lastMasterSyncSendTime = millis();
+          }
+        }
+      }
+    }
 
     // Trigger a closed-loop servo update only at the configured interval
     static unsigned long lastServoUpdateCall = 0;

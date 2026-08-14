@@ -98,6 +98,14 @@ Im Gegensatz zu gewöhnlichen Umluftventilatoren im Trockenzelt (die die Luft nu
 * **Auto-Bookmark Titel:** Der HTML-Header liefert dynamisch `<title>IDRY-26 Master</title>` bzw. `<title>IDRY-26 Slave</title>` aus.
 * **1s Rot-Pulsierender Update-Rahmen:** Ein schonender Hintergrund-Check (beim Boot, alle 10 min und beim Aufruf von `/firmware`) prüft GitHub-Releases. Liegt ein Update vor, pulsiert der Rahmen des `Firmware & OTA Update` Buttons im 1-Sekunden-Takt rot mit einem leuchtenden Halo.
 
+### 7. Adaptives Use-Case UI (Intelligentes Ausblenden inaktiver Module)
+* **Keine Info-Überflutung:** Das Web-UI analysiert im Sekundentakt die angeschlossenen Hardware-Sensoren, Displays und die ESP-NOW Rolle (Standalone, Master, Slave, Slave ohne Sensoren).
+* **Dynamisches Ein-/Ausblenden:**
+  * **Fehlt ein Sensor (z. B. auf Slaves ohne eigene Fühler):** Die Trocknungsstrategie-Buttons (60/60 & VPD) sowie die Hygro-Limit Schimmelschutzbox werden automatisch ausgeblendet, damit keine irrelevanten Knöpfe die Ansicht überfrachten.
+  * **Master-Slave Synchronisation (ESP-NOW V3):** Der Slave zeigt bei aufgerufener Funkverbindung ein breites, nicht anklickbares Badge `<span style="color:#38bdf8;">REMOTE</span> 60/60` bzw. `<span style="color:#f87171;">REMOTE</span> VPD` an, das sich live im 1-Sekunden-Takt mit der gewählten Master-Strategie synchronisiert.
+  * **Ausfallsicherer Notfall-Indikator:** Bricht die Funkverbindung ab (nach 3.5s verfehlten Heartbeats), wechselt das Badge automatisch auf `<span style="color:#f87171;">NOTFALL</span> 50% OPEN` oder `<span style="color:#f87171;">NOTFALL</span> 60/60` / `VPD`, um sofort die lokal greifende Notfall-Strategie zu signalisieren!
+  * **100% Ungefilterter Realtime-Benchmark:** Die ESP-NOW Verbindungsanzeige liefert die echten, unverschleierten Millisekunden-Abstände (`HB 0.998s`, `HB 1.004s`), isoliert auf gültige Data-Sync Pakete.
+
 ---
 
 ## 🏗️ Hardware-Ausbaustufen (Skalierbarkeit)

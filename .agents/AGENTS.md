@@ -51,7 +51,8 @@ Do not change the display SPI, I2C, potentiometer, or buzzer pins from their con
 * **Poti A Re-Mapping (VPD Mode):** 0% to 100% knob position maps to **0.60 kPa to 1.40 kPa**, with **1.00 kPa at 50% midpoint knob position**. Boundary zones ("Rigoros ZU" <= 49.5%, "Rigoros AUF" >= 70.5%) remain fully active.
 * **Hygro-Limit Mold Protection Cap:** Calculated target RH from target VPD is clamped: $RH_{\text{effective}} = \min(RH_{\text{calculated}}, \text{HygroLimit})$.
 * **RAW Telemetry & Dedicated Notice:** Server transmits `raw_calculated_rh` alongside `effective_target_rh`. Web UI displays `RH calculated soll: XX.X %` with a dedicated right-aligned red warning line `(limited to XX%)` below when raw RH exceeds the Hygro Limit.
-* **Slave [remote] Indicator:** On Slave devices (`espnow_role === 2`), Rotor & Servo card explicitly displays `Rotor Stellung: [remote] X %` in bold soft red (`#f87171`).
+* **Slave [remote] Indicator & Adaptive Use-Case UI:** On Slave devices (`espnow_role === 2`), Rotor & Servo card explicitly displays `Rotor Stellung: [remote] X %` in bold soft red (`#f87171`). When no active temperature/humidity sensor is connected, Dry Strategy controls and Hygro-Limit boxes are automatically hidden to prevent UI clutter. On Slaves without sensors, interactive strategy buttons are replaced by a non-clickable double-width badge (`REMOTE 60/60`, `REMOTE VPD`, or `NOTFALL 50% OPEN` / `NOTFALL 60/60` / `NOTFALL VPD`).
+* **Unfiltered Realtime Telemetry Benchmark:** `avgEspNowIntervalMs` outputs raw, unfiltered millisecond delta between 1s sync packets (`msg.command == 2`) without low-pass smoothing. ESP-NOW V3 protocol version rules and 3.5s offline threshold apply.
 
 ## Thermodynamic Shutter Logic
 * **Sensor Roles:** `tempSensors[0]` is Inside/Master; `tempSensors[1]` is Outside.
