@@ -3,7 +3,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/PlatformIO-Core-orange.svg" alt="PlatformIO">
   <img src="https://img.shields.io/badge/Board-YD--ESP32--S3-blue.svg" alt="ESP32-S3">
-  <img src="https://img.shields.io/badge/ESP--NOW-Encrypted%20Mesh-red.svg" alt="ESP-NOW">
+  <img src="https://img.shields.io/badge/ESP--NOW-Fast--Track%20Mesh-red.svg" alt="ESP-NOW">
   <img src="https://img.shields.io/badge/Home%20Assistant-MQTT%20Auto%20Discovery-03a9f4.svg" alt="Home Assistant">
   <img src="https://img.shields.io/badge/OTA-1--Click%20GitHub%20Update-green.svg" alt="OTA Update">
   <img src="https://img.shields.io/badge/Display-e--Paper%20%2F%20TFT%20%2F%20Headless-green.svg" alt="Display">
@@ -184,7 +184,7 @@ Die Displays teilen sich denselben physischen SPI-Kabelbaum (JST-Stecker am YD-E
 * **Saug-Sperre:** Ist die Außenluft feuchter als die Innenluft oder liegt sie $>2\%$ über dem Sollwert, schließt die Klappe sofort auf **0%**, um das Einsaugen feuchter Luft zu verhindern (inkl. akustischem Warn-Chime).
 
 ### 6. ESP-NOW Master/Slave Reconnection & 2-Stufen Fail-Safe
-* **Fast-Track Pairing:** Automatisches Channel-Hopping (Kanal 1–13) und Pairing per 128-Bit CCMP LMK Verschlüsselung mit case-insensitivem MAC-Vergleich (`strcasecmp`).
+* **Fast-Track Pairing:** Automatisches Channel-Hopping (Kanal 1–13) und unverschlüsseltes Peering (`peerInfo.encrypt = false` für 0% Paketverlust bei Kanalwechseln) mit gezieltem MAC-Vergleich (`strcasecmp`) und Protokollversions-Verifikation (V3).
 * **Fail-Safe Schutz (>60s):** Fällt die Funkverbindung aus, schaltet der Slave auf **50% Notfall-Öffnung** oder übernimmt autonom über eigene Sensoren.
 
 ---

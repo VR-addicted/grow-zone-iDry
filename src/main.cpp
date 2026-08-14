@@ -21,7 +21,7 @@
 #include <WiFiClientSecure.h>
 
 // Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 55;
+const int localFirmwareVersion = 56;
 extern int cachedOnlineVersion;
 void checkGithubUpdateAsync(bool force = false);
 
@@ -2289,7 +2289,7 @@ void handlePortalRoot() {
                                 }
                             }
                             if (hlBox) hlBox.style.display = 'none';
-                            if (potiALabel) potiALabel.innerText = (dryStrat === 1) ? 'Soll VPD:' : 'Sollwert Feuchte (A):';
+                            if (potiALabel) potiALabel.innerText = 'Sollwert Feuchte (A):';
 
                             let potValA = data.potentiometers.poti_a_target_hum;
                             let displayA = potValA.toFixed(0) + " %";
