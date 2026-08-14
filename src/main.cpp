@@ -21,7 +21,7 @@
 #include <WiFiClientSecure.h>
 
 // Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 53;
+const int localFirmwareVersion = 55;
 extern int cachedOnlineVersion;
 void checkGithubUpdateAsync(bool force = false);
 
@@ -807,8 +807,15 @@ void updateHistoryAccumulators1s() {
   if (rotorPosition > b5m_rotor_max)
     b5m_rotor_max = rotorPosition;
 
+  long espnowLastSeen = -1;
+  if (sysConfig.espnow_role == 1) {
+    espnowLastSeen = (lastEspNowTxSuccessTime == 0) ? -1 : (long)(millis() - lastEspNowTxSuccessTime);
+  } else if (sysConfig.espnow_role == 2) {
+    espnowLastSeen = (lastEspNowRxTime == 0) ? -1 : (long)(millis() - lastEspNowRxTime);
+  }
+
   if (sysConfig.espnow_role > 0 &&
-      (lastEspNowRxTime == 0 || (millis() - lastEspNowRxTime > 3000))) {
+      (espnowLastSeen == -1 || espnowLastSeen > 3500)) {
     b1m_espnow_loss_sec++;
     b5m_espnow_loss_sec++;
   }
