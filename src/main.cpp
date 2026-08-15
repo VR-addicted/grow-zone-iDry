@@ -21,7 +21,7 @@
 #include <WiFiClientSecure.h>
 
 // Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 56;
+const int localFirmwareVersion = 58;
 extern int cachedOnlineVersion;
 void checkGithubUpdateAsync(bool force = false);
 
@@ -809,9 +809,12 @@ void updateHistoryAccumulators1s() {
 
   long espnowLastSeen = -1;
   if (sysConfig.espnow_role == 1) {
-    espnowLastSeen = (lastEspNowTxSuccessTime == 0) ? -1 : (long)(millis() - lastEspNowTxSuccessTime);
+    espnowLastSeen = (lastEspNowTxSuccessTime == 0)
+                         ? -1
+                         : (long)(millis() - lastEspNowTxSuccessTime);
   } else if (sysConfig.espnow_role == 2) {
-    espnowLastSeen = (lastEspNowRxTime == 0) ? -1 : (long)(millis() - lastEspNowRxTime);
+    espnowLastSeen =
+        (lastEspNowRxTime == 0) ? -1 : (long)(millis() - lastEspNowRxTime);
   }
 
   if (sysConfig.espnow_role > 0 &&
@@ -5392,45 +5395,45 @@ void setup() {
       Serial.printf("[WLAN] Connected! IP: %s\n",
                     WiFi.localIP().toString().c_str());
       updateBootScreen("WLAN Verbunden!", WiFi.localIP().toString().c_str());
-
-      // Scan I2C Devices
-      scanI2C();
-
-      // Web Server Init (Real-time monitor)
-      server.on("/", handlePortalRoot);
-      server.on("/api/data", handleGetData);
-      server.on("/api/history", handleGetHistory);
-      server.on("/settings", handleSettingsPage);
-      server.on("/settings/save", handleSettingsSave);
-      server.on("/settings/reset", handleSettingsReset);
-      server.on("/api/espnow/pair", handleEspNowPairApi);
-      server.on("/api/espnow/buzzer_test", handleBuzzerTestApi);
-      server.on("/api/settings/dry_strategy", handleDryStrategyApi);
-      server.on("/firmware", handleFirmwarePage);
-      server.on("/firmware/autoupdate", handleAutoUpdate);
-      server.on("/api/firmware/autoupdate_start", handleAutoUpdateApi);
-      server.on("/firmware/upload", HTTP_POST, handleUploadFinish,
-                handleUploadProgress);
-      server.on("/favicon.ico", handleFavicon);
-      server.on("/favicon-32x32.png", handleFavicon);
-      server.begin();
-      initEspNow();
-
-      // Setup MQTT Settings
-      mqttClient.setServer(sysConfig.mqtt_server, sysConfig.mqtt_port);
-      mqttClient.setBufferSize(
-          2048); // Expand buffer from default 256 bytes for HA Discovery JSON
-      baseTopic = "idry/" + String(sysConfig.mqtt_device_name);
-      stateTopic = baseTopic + "/state";
-
-      delay(1000);
     } else {
       Serial.println(
-          "[WLAN] Connection timed out! Launching Captive Config Portal...");
-      updateBootScreen("WLAN Timeout!", "Starte Portal...");
-      delay(1000);
-      startCaptivePortal();
+          "[WLAN] Wi-Fi router not ready yet (power outage recovery). "
+          "Background reconnect watchdog will connect when router boots.");
+      updateBootScreen("WLAN Suche...", sysConfig.wifi_ssid);
     }
+
+    // Always scan I2C, initialize WebServer routes, start WebServer, ESP-NOW,
+    // and MQTT settings
+    scanI2C();
+
+    // Web Server Init (Real-time monitor)
+    server.on("/", handlePortalRoot);
+    server.on("/api/data", handleGetData);
+    server.on("/api/history", handleGetHistory);
+    server.on("/settings", handleSettingsPage);
+    server.on("/settings/save", handleSettingsSave);
+    server.on("/settings/reset", handleSettingsReset);
+    server.on("/api/espnow/pair", handleEspNowPairApi);
+    server.on("/api/espnow/buzzer_test", handleBuzzerTestApi);
+    server.on("/api/settings/dry_strategy", handleDryStrategyApi);
+    server.on("/firmware", handleFirmwarePage);
+    server.on("/firmware/autoupdate", handleAutoUpdate);
+    server.on("/api/firmware/autoupdate_start", handleAutoUpdateApi);
+    server.on("/firmware/upload", HTTP_POST, handleUploadFinish,
+              handleUploadProgress);
+    server.on("/favicon.ico", handleFavicon);
+    server.on("/favicon-32x32.png", handleFavicon);
+    server.begin();
+    initEspNow();
+
+    // Setup MQTT Settings
+    mqttClient.setServer(sysConfig.mqtt_server, sysConfig.mqtt_port);
+    mqttClient.setBufferSize(
+        2048); // Expand buffer from default 256 bytes for HA Discovery JSON
+    baseTopic = "idry/" + String(sysConfig.mqtt_device_name);
+    stateTopic = baseTopic + "/state";
+
+    delay(1000);
   } else {
     Serial.println(
         "[WLAN] No configuration stored. Starting Captive Config Portal...");
