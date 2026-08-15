@@ -5295,9 +5295,16 @@ bool detectDisplayType() {
   }
 }
 
-// WiFi Event Handler for Instant Reconnection
+static bool isServerStarted = false;
+
+// WiFi Event Handler for Instant Reconnection & Dynamic WebServer Socket Binding
 void WiFiEvent(WiFiEvent_t event) {
-  if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+  if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+    Serial.printf("[WLAN] Event: Got IP %s. Binding WebServer...\n",
+                  WiFi.localIP().toString().c_str());
+    server.begin();
+    isServerStarted = true;
+  } else if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
     Serial.println("[WLAN] Event: WiFi connection lost.");
   }
 }
@@ -5395,6 +5402,8 @@ void setup() {
       Serial.printf("[WLAN] Connected! IP: %s\n",
                     WiFi.localIP().toString().c_str());
       updateBootScreen("WLAN Verbunden!", WiFi.localIP().toString().c_str());
+      server.begin();
+      isServerStarted = true;
     } else {
       Serial.println(
           "[WLAN] Wi-Fi router not ready yet (power outage recovery). "
@@ -5402,11 +5411,10 @@ void setup() {
       updateBootScreen("WLAN Suche...", sysConfig.wifi_ssid);
     }
 
-    // Always scan I2C, initialize WebServer routes, start WebServer, ESP-NOW,
-    // and MQTT settings
+    // Always scan I2C, initialize WebServer routes, start ESP-NOW and MQTT settings
     scanI2C();
 
-    // Web Server Init (Real-time monitor)
+    // Web Server Routes Init
     server.on("/", handlePortalRoot);
     server.on("/api/data", handleGetData);
     server.on("/api/history", handleGetHistory);
@@ -5423,7 +5431,6 @@ void setup() {
               handleUploadProgress);
     server.on("/favicon.ico", handleFavicon);
     server.on("/favicon-32x32.png", handleFavicon);
-    server.begin();
     initEspNow();
 
     // Setup MQTT Settings
