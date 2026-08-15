@@ -20,8 +20,11 @@
 #include <Update.h>
 #include <WiFiClientSecure.h>
 
-// Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 61;
+// Firmware Version (automatically incremented on each build via version_increment.py)
+#ifndef BUILD_NUMBER
+#define BUILD_NUMBER 61
+#endif
+const int localFirmwareVersion = BUILD_NUMBER;
 extern int cachedOnlineVersion;
 void checkGithubUpdateAsync(bool force = false);
 
