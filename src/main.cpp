@@ -21,7 +21,7 @@
 #include <WiFiClientSecure.h>
 
 // Hardcoded Firmware Version (incremented on each release)
-const int localFirmwareVersion = 58;
+const int localFirmwareVersion = 60;
 extern int cachedOnlineVersion;
 void checkGithubUpdateAsync(bool force = false);
 
@@ -617,6 +617,22 @@ void initEspNow() {
   }
 }
 
+uint32_t calculateConfigCRC(const JsonDocument &doc) {
+  String payload;
+  serializeJson(doc, payload);
+
+  uint32_t crc = 0xFFFFFFFF;
+  for (size_t i = 0; i < payload.length(); i++) {
+    uint8_t b = (uint8_t)payload[i];
+    crc ^= b;
+    for (int j = 0; j < 8; j++) {
+      uint32_t mask = -(crc & 1);
+      crc = (crc >> 1) ^ (0xEDB88320 & mask);
+    }
+  }
+  return ~crc;
+}
+
 bool loadConfiguration() {
   if (!LittleFS.begin(true)) {
     Serial.println("[LittleFS] Mount Failed, formatting filesystem...");
@@ -635,9 +651,32 @@ bool loadConfiguration() {
   DeserializationError error = deserializeJson(doc, file);
   file.close();
   if (error) {
-    Serial.println("[LittleFS] Failed to parse config JSON.");
+    Serial.println("[LittleFS] CORRUPTED CONFIG DETECTED: JSON parse error! "
+                   "Auto-purging bad config file...");
+    LittleFS.remove("/config.json");
     return false;
   }
+
+  // Verify embedded CRC32 checksum if present
+  if (doc["crc"].is<uint32_t>()) {
+    uint32_t savedCrc = doc["crc"].as<uint32_t>();
+    doc.remove("crc");
+    uint32_t computedCrc = calculateConfigCRC(doc);
+    if (savedCrc != computedCrc) {
+      Serial.printf(
+          "[LittleFS] CORRUPTED CONFIG DETECTED: CRC32 mismatch! (Saved: "
+          "0x%08X, Computed: 0x%08X). Auto-purging bad config file...\n",
+          savedCrc, computedCrc);
+      LittleFS.remove("/config.json");
+      return false;
+    }
+    Serial.printf("[LittleFS] CRC32 verification SUCCESS! (0x%08X)\n",
+                  savedCrc);
+  } else {
+    Serial.println("[LittleFS] Legacy configuration without CRC detected. "
+                   "Upgrading on next save.");
+  }
+
   strlcpy(sysConfig.wifi_ssid, doc["wifi_ssid"] | "",
           sizeof(sysConfig.wifi_ssid));
   strlcpy(sysConfig.wifi_pass, doc["wifi_pass"] | "",
@@ -697,13 +736,19 @@ bool saveConfiguration() {
   doc["dry_strategy"] = sysConfig.dry_strategy;
   doc["hygro_limit"] = sysConfig.hygro_limit;
 
+  // Compute and embed CRC32 checksum
+  uint32_t crcVal = calculateConfigCRC(doc);
+  doc["crc"] = crcVal;
+
   if (serializeJson(doc, file) == 0) {
     Serial.println("[LittleFS] Failed to serialize configuration JSON.");
     file.close();
     return false;
   }
   file.close();
-  Serial.println("[LittleFS] Configuration successfully saved.");
+  Serial.printf(
+      "[LittleFS] Configuration successfully saved with CRC32: 0x%08X\n",
+      crcVal);
   return true;
 }
 
@@ -5297,7 +5342,8 @@ bool detectDisplayType() {
 
 static bool isServerStarted = false;
 
-// WiFi Event Handler for Instant Reconnection & Dynamic WebServer Socket Binding
+// WiFi Event Handler for Instant Reconnection & Dynamic WebServer Socket
+// Binding
 void WiFiEvent(WiFiEvent_t event) {
   if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
     Serial.printf("[WLAN] Event: Got IP %s. Binding WebServer...\n",
@@ -5411,7 +5457,8 @@ void setup() {
       updateBootScreen("WLAN Suche...", sysConfig.wifi_ssid);
     }
 
-    // Always scan I2C, initialize WebServer routes, start ESP-NOW and MQTT settings
+    // Always scan I2C, initialize WebServer routes, start ESP-NOW and MQTT
+    // settings
     scanI2C();
 
     // Web Server Routes Init

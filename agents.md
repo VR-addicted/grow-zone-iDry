@@ -58,6 +58,7 @@ Do not change SPI, I2C, ADC, or actuator pin assignments:
 
 ## Active Connection Watchdogs & Web UI Timeouts
 * **Gateway Watchdog:** Perform TCP client connection checks to `WiFi.gatewayIP()` on port 80 every 2 seconds. If a timeout (> 400ms) occurs, call `WiFi.disconnect(true)` immediately and initiate reconnect cycle.
+* **Embedded CRC32 Config Integrity Protection & Auto-Self-Healing:** `saveConfiguration()` embeds a 32-bit CRC (`"crc": 0xXXXXXXXX`) inside `/config.json`. On boot, `loadConfiguration()` computes the CRC over payload fields. If a CRC mismatch or JSON parse error occurs (e.g. power outage abort), the corrupted file is automatically purged (`LittleFS.remove("/config.json")`) and the device boots cleanly into Captive Portal Setup Mode.
 * **Web UI AJAX Timeout:** Fetch `/api/data` in Web UI using a 1000ms `AbortController` timeout to transition UI immediately into offline status when link drops.
 * **WLAN Connection Watchdog Alarm (`wlan_time_trap`):** Configurable slider (0–330s, default 120s). When connection drops, play double beep buzzer sequence and repeat at configured interval.
 * **Weekly Reboot Watchdog:** Uptime monitored via `millis()`. When uptime exceeds 1 week (7 days / 604,800,000ms), check NTP clock and reboot at 03:00 AM local time.
