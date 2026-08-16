@@ -1996,8 +1996,8 @@ void handlePortalRoot() {
         <h1 id="device-title">IDRY-26 Loading...</h1>
         <div class="grid">
             <div class="card">
-                <div id="strat-section" style="margin-bottom: 12px;">
-                    <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #94a3b8; font-weight: 600; margin-bottom: 8px;">Dry Strategy</div>
+                <div id="strat-section" style="margin-bottom: 14px;">
+                    <div class="card-title">Dry Strategy</div>
                     <div style="display: flex; gap: 6px;">
                         <button id="strat-btn-6060" onclick="setDryStrategy(0, currentHygroLimit)" style="flex: 1; padding: 10px 0; background: #22c55e; border: 1px solid rgba(255,255,255,0.2); color: white; font-weight: bold; border-radius: 8px; cursor: pointer; transition: all 0.2s;">60/60</button>
                         <button id="strat-btn-vpd" onclick="setDryStrategy(1, currentHygroLimit)" style="flex: 1; padding: 10px 0; background: #1e293b; border: 1px solid rgba(255,255,255,0.15); color: #94a3b8; font-weight: bold; border-radius: 8px; cursor: pointer; transition: all 0.2s;">VPD</button>
