@@ -14,18 +14,25 @@
 
 ---
 
-## 🔥 **HIGHLIGHT FEATURE:** Scientific VPD Strategy & Hygro-Limit Mold Protection
+## 🔥 **HIGHLIGHT FEATURE:** Scientific VPD Strategy, Automated 14-Day Curve & Hygro-Limit Mold Protection
 
-**iDry-26** unterstützt zwei wählbare Trocknungs-Strategien, die stufenlos per Umschalter im Web-Dashboard gewählt werden können:
+**iDry-26** unterstützt drei wählbare Trocknungs-Strategien, die stufenlos per Umschalter im Web-Dashboard gewählt werden können:
 
 1. **60/60 Mode (Klassische Feuchteregelung):**  
    Poti A bestimmt direkt die Wunsch-Luftfeuchtigkeit (z. B. 60% RH).
-2. **VPD Target Mode (Wissenschaftliche Sättigungsdefizit-Regelung):**  
+2. **VPD Target Mode (Manuelle Sättigungsdefizit-Regelung):**  
    - **Präzise VPD-Skalierung auf Poti A:** Der Drehknopf regelt stufenlos den **Wunsch-VPD von 0.60 kPa bis 1.40 kPa**, mit **1.00 kPa exakt in der physikalischen Mittelstellung (50%)**.
    - **Automatische Temperatur-Kompensation:** Aus der aktuellen Innentemperatur berechnet das System in Echtzeit die exakt benötigten Feuchteprozente ($RH_{\text{calculated}}$), um deinen Wunsch-VPD perfekt einzuregeln.
-   - **Hygro-Limit Schimmelschutz-Garantie (70% / 75% / 80%):** Per Radio-Button wählbarer Maximalwert für die relative Luftfeuchte. Das System berechnet die Zielfeuchte, kappt sie jedoch **unwiderruflich bei deinem eingestellten Hygro-Limit** ($RH_{\text{effective}} = \min(RH_{\text{calculated}}, \text{Limit})$). Somit wird Schimmelbildung selbst bei extrem schwankenden Temperaturen zu 100% ausgeschlossen!
-   - **Transparente RAW-Telemetrie:** Im Dashboard wird live der un-gekapte mathematische Sollwert angezeigt (`RH calculated soll: 73.4 %`), inklusive dynamischem rotem Hinweis `(limited to 70%)`, wenn die Schimmelbremse aktiv greift.
-   - **Persistent & Ausfallsicher:** Die gewählte Strategie und das Hygro-Limit werden dauerhaft in LittleFS gespeichert und überleben Stromausfälle sowie Neustarts ohne Datenverlust.
+3. **VPD AUTO Mode (`VPD AU` – Wissenschaftlicher 14-Tage-Trocknungsplan):**  
+   - **Vollautomatischer 14-Tage-Kurvenverlauf:** Regelt das Sättigungsdefizit nach einem wissenschaftlichen Curing-Profil stufenweise von **0.70 kPa an Tag 1 (~70% RH)** sanft ansteigend bis **1.10 kPa an Tag 14 (~55% RH)**.
+   - **Interaktives 14-Tage Dropdown & Kerzenleiste:** Das Web-UI bietet ein 14-zeiliges Dropdown zur manuelle Tag-Auswahl inklusive farbiger Kerzenleiste mit leuchtend pulsierender Animation (`@keyframes vpd-candle-pulse`) für den aktiven Tag.
+   - **Automatischer Tageswechsel (Midnight Sync & MCU Microtime):** Tägliche Weiterschaltung punkt 00:00 Uhr Mitternacht (via SNTP/NTP) oder nach jeweils 24 Stunden Laufzeit.
+   - **Nach Tag 14 (Haltemodus):** Auch ab Tag 15, 20 oder 30 bleibt der Ziel-VPD stabil auf dem optimalen Wert von Tag 14 (1.10 kPa), ohne abzubrechen.
+   - **Dynamische gelbe Ideallinie (`#facc15`):** Auf den beiden VPD-Sättigungsdefizit-Graphen sowie im 24h Zoom Modal zeichnet das System eine leuchtend gelbe, gestrichelte Sollwert-Linie, die im `VPD AU` Modus exakt auf der tagesaktuellen Zielhöhe wandert.
+
+- **Hygro-Limit Schimmelschutz-Garantie (70% / 75% / 80%):** Per Radio-Button wählbarer Maximalwert für die relative Luftfeuchte. Das System berechnet die Zielfeuchte, kappt sie jedoch **unwiderruflich bei deinem eingestellten Hygro-Limit** ($RH_{\text{effective}} = \min(RH_{\text{calculated}}, \text{Limit})$). Somit wird Schimmelbildung selbst bei extrem schwankenden Temperaturen zu 100% ausgeschlossen!
+- **Transparente RAW-Telemetrie:** Im Dashboard wird live der un-gekapte mathematische Sollwert angezeigt (`RH calculated soll: 73.4 %`), inklusive dynamischem rotem Hinweis `(limited to 70%)`, wenn die Schimmelbremse aktiv greift.
+- **Persistent & Ausfallsicher:** Die gewählte Strategie, der aktive Tag und das Hygro-Limit werden dauerhaft in LittleFS gespeichert und überleben Stromausfälle sowie Neustarts ohne Datenverlust.
 
 ---
 
@@ -168,7 +175,7 @@ Die Displays teilen sich denselben physischen SPI-Kabelbaum (JST-Stecker am YD-E
 
 ### 2. Nahtlose Home Assistant Integration (1-Klick Auto-Discovery)
 * **Zero-Configuration:** Home Assistant erkennt iDry-26 unter *Einstellungen ➔ Geräte & Dienste ➔ MQTT* **vollautomatisch**.
-* Überträgt live über 20+ Sensorwerte: Rotor-Position (%), Servo-Winkel (°), Temperatur (°C), Luftfeuchtigkeit (%), Taupunkt (°C), VPD (kPa), Signalstärke (dBm/LQI), Potis A/B/C und alle angeschlossenen I2C-Sensoren.
+* Überträgt live über 20+ Sensorwerte: Rotor-Position (%), Servo-Winkel (°), Temperatur (°C), Luftfeuchtigkeit (%), Taupunkt (°C), VPD (kPa), Signalstärke (dBm/LQI), Potis A/B/C, Dry Strategy (0=60/60, 1=VPD, 2=VPD AU), VPD Auto Tag (1-14 bzw. -1) und alle angeschlossenen I2C-Sensoren.
 * Spezieller 2048-Byte MQTT-Puffer verhindert das Abschneiden großer JSON-Entitäten.
 
 ### 3. 1-Klick GitHub OTA Update mit Live-Terminal & Header-Schutz

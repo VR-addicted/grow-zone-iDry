@@ -5549,6 +5549,8 @@ void registerHomeAssistantDevices() {
   sendHADiscoveryConfig("poti_a", "Poti A (Sollwert)", "%", "mdi:knob", "");
   sendHADiscoveryConfig("poti_b", "Poti B (Gain)", "%", "mdi:knob", "");
   sendHADiscoveryConfig("poti_c", "Poti C (Cal Offset)", "°", "mdi:knob", "");
+  sendHADiscoveryConfig("dry_strategy", "Dry Strategy", "", "mdi:tune", "");
+  sendHADiscoveryConfig("vpd_auto_day", "VPD Auto Tag", "Tag", "mdi:calendar-range", "");
   sendHADiscoveryConfig("linkquality", "Signalstärke", "lqi", "mdi:signal", "");
   sendHADiscoveryConfig("rssi", "WLAN Signalstärke", "dBm", "mdi:wifi",
                         "signal_strength");
@@ -5627,6 +5629,15 @@ void publishMqttState() {
       (sysConfig.espnow_role > 0 && strlen(sysConfig.espnow_peer_mac) > 0)
           ? avgEspNowIntervalMs
           : 0;
+
+  uint8_t activeDryStrat =
+      (sysConfig.espnow_role == 2 && lastEspNowRxTime != 0 &&
+       (millis() - lastEspNowRxTime <= 5000))
+          ? remoteMasterDryStrategy
+          : sysConfig.dry_strategy;
+  doc["dry_strategy"] = activeDryStrat;
+  doc["vpd_auto_day"] = (activeDryStrat == 2) ? getVpdAutoCurrentDay() : -1;
+
   doc["linkquality"] =
       (WiFi.status() == WL_CONNECTED) ? map(WiFi.RSSI(), -100, -30, 0, 255) : 0;
   doc["rssi"] = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;

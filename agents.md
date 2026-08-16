@@ -77,12 +77,14 @@ Do not change SPI, I2C, ADC, or actuator pin assignments:
 ---
 
 ## VPD Strategy Engine & Hygro-Limit Mold Protection
-* **Dual Strategy Selection:** Configurable via Web UI or HTTP POST `/api/settings/dry_strategy?mode=X&limit=Y` (`sysConfig.dry_strategy`: 0 = 60/60 Mode, 1 = VPD Mode; `sysConfig.hygro_limit`: 70, 75, or 80%).
-* **Poti A Re-Mapping (VPD Mode):** 0% to 100% knob position maps to **0.60 kPa to 1.40 kPa**, with **1.00 kPa at 50% midpoint knob position**.
+* **3-Mode Strategy Selection:** Configurable via Web UI or HTTP POST `/api/settings/dry_strategy?mode=X&limit=Y` (`sysConfig.dry_strategy`: 0 = 60/60 Mode, 1 = VPD Mode, 2 = VPD AUTO Mode; `sysConfig.hygro_limit`: 70, 75, or 80%).
+* **VPD AUTO 14-Day Progression:** 14-day automated Curing schedule (Day 1: 0.70 kPa ~70% RH ... Day 14: 1.10 kPa ~55% RH). Days > 14 remain clamped at Day 14 target (1.10 kPa). Includes interactive 14-option dropdown selector and 42px candle strip with continuous pulsing glow (`@keyframes vpd-candle-pulse`) on active day.
+* **Yellow Dotted Baseline Line (`#facc15`):** Both VPD charts (`VPD Innen` and `VPD Außen`) and the 24h Zoom Modal draw a bright yellow dashed target line tracking the active day's target VPD in `VPD AUTO` mode or manual target VPD in `VPD` mode. Hidden in `60/60` mode.
+* **Poti A Re-Mapping (VPD Mode):** 0% to 100% knob position maps to **0.60 kPa to 1.40 kPa**, with **1.00 kPa at 50% midpoint knob position**. (In `VPD AUTO` mode, Poti A is overridden by current day target VPD).
 * **Hygro-Limit Mold Protection Cap:** Target RH derived from VPD is clamped: $RH_{\text{effective}} = \min(RH_{\text{calculated}}, \text{HygroLimit})$.
 * **RAW Telemetry & Dynamic Notice:** Server transmits `raw_calculated_rh` alongside `effective_target_rh`. UI displays `RH calculated soll: XX.X %` with a dedicated red warning line `(limited to XX%)` when raw RH exceeds the Hygro Limit.
-* **Slave [remote] Indicator & Adaptive Use-Case UI:** On Slave devices (`espnow_role === 2`), Rotor & Servo card explicitly displays `Rotor Stellung: [remote] X %` in bold soft red (`#f87171`). When no active temperature/humidity sensor is connected, Dry Strategy controls and Hygro-Limit boxes are automatically hidden to keep the UI clean. On Slaves without sensors, interactive strategy buttons are replaced by a non-clickable double-width badge (`REMOTE 60/60`, `REMOTE VPD`, or `NOTFALL 50% OPEN` / `NOTFALL 60/60` / `NOTFALL VPD`).
-* **Unfiltered Realtime Telemetry Benchmark:** `avgEspNowIntervalMs` outputs raw, unfiltered millisecond delta between 1s sync packets (`msg.command == 2`) without low-pass smoothing. Offline threshold triggers after 3.5s (3 missed heartbeats).
+* **Slave [remote] Indicator & Adaptive Use-Case UI:** On Slave devices (`espnow_role === 2`), Rotor & Servo card explicitly displays `Rotor Stellung: [remote] X %` in bold soft red (`#f87171`). When no active temperature/humidity sensor is connected, Dry Strategy controls and Hygro-Limit boxes are automatically hidden to keep the UI clean. On Slaves without sensors, interactive strategy buttons are replaced by a non-clickable double-width badge (`REMOTE 60/60`, `REMOTE VPD`, `REMOTE VPD AU`, or `NOTFALL 50% OPEN` / `NOTFALL 60/60` / `NOTFALL VPD`).
+* **Unfiltered Realtime Telemetry Benchmark:** `avgEspNowIntervalMs` outputs raw, unfiltered millisecond delta between 1s sync packets (`msg.command == 2`) without low-pass smoothing. Offline threshold triggers after 5.0s (5 missed heartbeats).
 
 ---
 
@@ -109,7 +111,7 @@ Do not change SPI, I2C, ADC, or actuator pin assignments:
 ---
 
 ## Home Assistant MQTT Auto-Discovery & PubSubClient Buffer
-* **1-Click Auto-Discovery:** Automatically publishes discovery payloads for all entities.
+* **1-Click Auto-Discovery:** Automatically publishes discovery payloads for all entities, including `dry_strategy` (0 = 60/60, 1 = VPD, 2 = VPD AU) and `vpd_auto_day` (1..14 in VPD AUTO mode, -1 in other modes).
 * **2048-Byte Buffer:** `mqttClient.setBufferSize(2048)` is enforced to prevent large JSON payloads from being dropped.
 
 ---
