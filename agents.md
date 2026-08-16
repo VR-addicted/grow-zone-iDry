@@ -53,6 +53,7 @@ Do not change SPI, I2C, ADC, or actuator pin assignments:
 * **Dynamic Moon Favicon:** 32x32 offscreen HTML5 canvas dynamically renders live shutter opening phase into browser tab icon (0 Byte ESP32 RAM).
 * **Dynamic Tab Title & Bookmarks:** Server emits `<title>IDRY-26 Master</title>` / `<title>IDRY-26 Slave</title>` for instant clean bookmarking.
 * **Pulsing Red OTA Update Border:** Background check (at boot, every 10 min, and `/firmware`) toggles a 1-second pulsing red border animation with glowing halo around the `Firmware & OTA Update` button on Settings page when an update is available.
+* **Compact VPD AUTO & Dropdown Selector:** 3rd Dry Strategy Mode (`VPD AU`). Displays compact 42px high 14-candle strip with continuous glowing pulse animation (`@keyframes vpd-candle-pulse`) on active day. Includes a 14-option dropdown selector (`Tag 1 (0.70 kPa)` .. `Tag 14 (1.10 kPa)`) linked to 2-second hold confirmation modal. Features dual NTP (00:00 midnight sync) and MCU microtime (uptime fallback) 24h day rollover.
 
 ---
 
@@ -66,7 +67,7 @@ Do not change SPI, I2C, ADC, or actuator pin assignments:
 ---
 
 ## ESP-NOW Master/Slave Mesh & Fail-Safe Protection
-* **Protocol Versioning (V3):** Increment `localProtocolVersion` (currently V3) whenever `EspNowMessage` struct or command payload changes. `EspNowMessage` includes `uint8_t dry_strategy` to continuously sync strategy (0 = 60/60, 1 = VPD) every 1 second. Web UI alerts user on version mismatch.
+* **Protocol Versioning (V3):** Increment `localProtocolVersion` (currently V3) whenever `EspNowMessage` struct or command payload changes. `EspNowMessage` includes `uint8_t dry_strategy` to continuously sync strategy (0 = 60/60, 1 = VPD, 2 = VPD AUTO) every 1 second. Web UI alerts user on version mismatch.
 * **Fast-Track Channel Pairing:** Master broadcasts pairing beacons on Wi-Fi channel; Slave hops channels 1–13 every 1.2s to establish peer MAC address binding and protocol version verification (`peerInfo.encrypt = false` to guarantee 0% packet loss during Wi-Fi channel hopping). Case-insensitive MAC comparison (`strcasecmp`).
 * **Aggressive Reconnection (>20s):** On Slave devices, if no packet is received for >20 seconds, re-initialize ESP-NOW stack (`initEspNow()`) every 15 seconds without MCU reboot.
 * **2-Stage Fail-Safe Mode (>60s Connection Loss):**

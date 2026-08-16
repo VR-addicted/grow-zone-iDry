@@ -155,8 +155,10 @@ struct Config {
                             // disabled, 1 to 330)
   int espnow_failsafe_mode = 0; // Slave fail-safe mode on connection loss: 0 =
                                 // 50% Safety Open, 1 = Local Control
-  int dry_strategy = 0;         // Dry Strategy: 0 = 60/60 Mode, 1 = VPD Mode
+  int dry_strategy = 0;         // Dry Strategy: 0 = 60/60 Mode, 1 = VPD Mode, 2 = VPD AUTO
   int hygro_limit = 70;         // Hygro-Limit Safety Cap: 70 or 75 (%)
+  int vpd_auto_day = 1;         // Active day index for VPD AUTO mode (1 to 14)
+  unsigned long vpd_auto_start_time = 0; // Timestamp when active day was set
 };
 
 Config sysConfig;
@@ -707,6 +709,8 @@ bool loadConfiguration() {
   sysConfig.espnow_failsafe_mode = doc["espnow_failsafe_mode"] | 0;
   sysConfig.dry_strategy = doc["dry_strategy"] | 0;
   sysConfig.hygro_limit = doc["hygro_limit"] | 70;
+  sysConfig.vpd_auto_day = doc["vpd_auto_day"] | 1;
+  sysConfig.vpd_auto_start_time = doc["vpd_auto_start_time"] | 0;
 
   Serial.println("[LittleFS] Configuration successfully loaded.");
   return true;
@@ -738,6 +742,8 @@ bool saveConfiguration() {
   doc["espnow_failsafe_mode"] = sysConfig.espnow_failsafe_mode;
   doc["dry_strategy"] = sysConfig.dry_strategy;
   doc["hygro_limit"] = sysConfig.hygro_limit;
+  doc["vpd_auto_day"] = sysConfig.vpd_auto_day;
+  doc["vpd_auto_start_time"] = sysConfig.vpd_auto_start_time;
 
   // Compute and embed CRC32 checksum
   uint32_t crcVal = calculateConfigCRC(doc);
@@ -1138,6 +1144,47 @@ void readSensors() {
   }
 }
 
+int getVpdAutoCurrentDay() {
+  if (sysConfig.vpd_auto_day < 1) sysConfig.vpd_auto_day = 1;
+  if (sysConfig.vpd_auto_day > 14) sysConfig.vpd_auto_day = 14;
+
+  if (sysConfig.vpd_auto_start_time == 0) {
+    time_t now = time(NULL);
+    if (now > 1700000000UL) {
+      sysConfig.vpd_auto_start_time = (uint32_t)now;
+    } else {
+      sysConfig.vpd_auto_start_time = (uint32_t)(millis() / 1000UL);
+    }
+  }
+
+  time_t now = time(NULL);
+  int daysPassed = 0;
+  if (now > 1700000000UL && sysConfig.vpd_auto_start_time > 1700000000UL) {
+    time_t startTime = (time_t)sysConfig.vpd_auto_start_time;
+    struct tm tmStart, tmNow;
+    localtime_r(&startTime, &tmStart);
+    localtime_r(&now, &tmNow);
+    tmStart.tm_hour = 0; tmStart.tm_min = 0; tmStart.tm_sec = 0;
+    tmNow.tm_hour = 0; tmNow.tm_min = 0; tmNow.tm_sec = 0;
+    time_t startMidnight = mktime(&tmStart);
+    time_t nowMidnight = mktime(&tmNow);
+
+    if (nowMidnight >= startMidnight) {
+      daysPassed = (int)((nowMidnight - startMidnight) / 86400UL);
+    }
+  } else {
+    unsigned long currentSec = millis() / 1000UL;
+    if (currentSec >= sysConfig.vpd_auto_start_time) {
+      daysPassed = (int)((currentSec - sysConfig.vpd_auto_start_time) / 86400UL);
+    }
+  }
+
+  int currentDay = sysConfig.vpd_auto_day + daysPassed;
+  if (currentDay < 1) currentDay = 1;
+  if (currentDay > 14) currentDay = 14;
+  return currentDay;
+}
+
 void updateServoRamping(bool updateTarget = false) {
   static bool pendingTargetUpdate = false;
   if (updateTarget) {
@@ -1183,7 +1230,33 @@ void updateServoRamping(bool updateTarget = false) {
       (smoothedC / 4095.0F) * 59.0F; // 0 - 59 degrees virtual 0-point offset
 
   // Compute VPD target (0.60 to 1.40 kPa) & Effective RH target
-  if (sysConfig.dry_strategy == 1) { // VPD Mode
+  const float vpdAutoProfile[14] = {
+    0.70f, 0.72f, 0.75f, 0.80f, 0.85f, 0.90f, 0.95f, 0.98f, 1.00f, 1.02f, 1.05f, 1.07f, 1.08f, 1.10f
+  };
+
+  if (sysConfig.dry_strategy == 2) { // VPD AUTO Mode
+    int currentDay = getVpdAutoCurrentDay();
+    targetVpdVal = vpdAutoProfile[currentDay - 1];
+
+    float indoorTemp = NAN;
+    if (tempSensors[0].active && !isnan(tempSensors[0].temperature)) {
+      indoorTemp = tempSensors[0].temperature;
+    } else if (tempSensors[1].active && !isnan(tempSensors[1].temperature)) {
+      indoorTemp = tempSensors[1].temperature;
+    }
+
+    if (!isnan(indoorTemp)) {
+      float svp = calculateSVP(indoorTemp);
+      float avpTarget = svp - targetVpdVal;
+      rawCalculatedRh = (svp > 0.001f) ? (avpTarget / svp) * 100.0f : 60.0f;
+      float rhCalc = rawCalculatedRh;
+      if (rhCalc < 30.0f)
+        rhCalc = 30.0f;
+      if (rhCalc > (float)sysConfig.hygro_limit)
+        rhCalc = (float)sysConfig.hygro_limit;
+      effectiveTargetRh = (float)round(rhCalc * 10.0f) / 10.0f;
+    }
+  } else if (sysConfig.dry_strategy == 1) { // VPD Mode
     targetVpdVal = 0.60f + (smoothedA / 4095.0f) * 0.80f;
     targetVpdVal = (float)round(targetVpdVal * 100.0f) / 100.0f;
     if (targetVpdVal < 0.60f)
@@ -1314,12 +1387,12 @@ void updateServoRamping(bool updateTarget = false) {
     } else {
       // Master Mode OR Slave Fail-Safe Mode 1 (Local Control via Slave's Poti A
       // & Sensor)
-      if (potiAVal <= 49.0f) {
-        // Virtual switch at bottom end: Rigorously closed (0% opening)
+      if (sysConfig.dry_strategy == 0 && potiAVal <= 49.0f) {
+        // Virtual switch at bottom end (60/60 mode only): Rigorously closed (0% opening)
         rotorPosition = 0.0f;
         bypassModeActive = false;
-      } else if (potiAVal >= 71.0f) {
-        // Virtual switch at top end: Rigorously open (100% opening)
+      } else if (sysConfig.dry_strategy == 0 && potiAVal >= 71.0f) {
+        // Virtual switch at top end (60/60 mode only): Rigorously open (100% opening)
         rotorPosition = 100.0f;
         bypassModeActive = false;
       } else {
@@ -1345,7 +1418,7 @@ void updateServoRamping(bool updateTarget = false) {
 
         if (!isnan(hum_inside)) {
           float activeTargetRh =
-              (sysConfig.dry_strategy == 1) ? effectiveTargetRh : potiAVal;
+              (sysConfig.dry_strategy != 0) ? effectiveTargetRh : potiAVal;
 
           // Thermodynamic bypass check: If outside humidity is higher than
           // inside humidity OR outside humidity is more than 2% above the
@@ -1538,6 +1611,13 @@ void handleGetData() {
   doc["dry_strategy"] =
       isSlaveConnected ? remoteMasterDryStrategy : sysConfig.dry_strategy;
   doc["hygro_limit"] = sysConfig.hygro_limit;
+
+  const float vpdAutoProfileRef[14] = {
+    0.70f, 0.72f, 0.75f, 0.80f, 0.85f, 0.90f, 0.95f, 0.98f, 1.00f, 1.02f, 1.05f, 1.07f, 1.08f, 1.10f
+  };
+  int calculatedAutoDay = getVpdAutoCurrentDay();
+  doc["vpd_auto_day"] = calculatedAutoDay;
+  doc["vpd_auto_target_vpd"] = vpdAutoProfileRef[calculatedAutoDay - 1];
 
   doc["rotor_position"] = rotorPosition;
   doc["rotor_offset"] = potiCVal;
@@ -1903,6 +1983,12 @@ void handlePortalRoot() {
         details.hist-toggle summary { font-size: 11px; color: #94a3b8; cursor: pointer; user-select: none; font-weight: 600; outline: none; margin-bottom: 4px; }
         .spark-box { position: relative; width: 100%; height: 50px; background: rgba(15,23,42,0.6); border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); overflow: hidden; cursor: pointer; }
         .spark-box canvas { width: 100%; height: 50px; display: block; }
+        @keyframes vpd-candle-pulse {
+            0% { box-shadow: 0 0 3px rgba(56,189,248,0.4); border-color: #38bdf8; background-color: #38bdf8; }
+            50% { box-shadow: 0 0 16px rgba(255,255,255,1), 0 0 8px rgba(56,189,248,1); border-color: #ffffff; background-color: #ffffff; }
+            100% { box-shadow: 0 0 3px rgba(56,189,248,0.4); border-color: #38bdf8; background-color: #38bdf8; }
+        }
+        .vpd-candle-active { animation: vpd-candle-pulse 1.8s infinite ease-in-out; }
     </style>
 </head>
 <body>
@@ -1912,23 +1998,48 @@ void handlePortalRoot() {
             <div class="card">
                 <div id="strat-section" style="margin-bottom: 12px;">
                     <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #94a3b8; font-weight: 600; margin-bottom: 8px;">Dry Strategy</div>
-                    <div style="display: flex; gap: 8px;">
+                    <div style="display: flex; gap: 6px;">
                         <button id="strat-btn-6060" onclick="setDryStrategy(0, currentHygroLimit)" style="flex: 1; padding: 10px 0; background: #22c55e; border: 1px solid rgba(255,255,255,0.2); color: white; font-weight: bold; border-radius: 8px; cursor: pointer; transition: all 0.2s;">60/60</button>
                         <button id="strat-btn-vpd" onclick="setDryStrategy(1, currentHygroLimit)" style="flex: 1; padding: 10px 0; background: #1e293b; border: 1px solid rgba(255,255,255,0.15); color: #94a3b8; font-weight: bold; border-radius: 8px; cursor: pointer; transition: all 0.2s;">VPD</button>
+                        <button id="strat-btn-vpd-auto" onclick="setDryStrategy(2, currentHygroLimit)" style="flex: 1; padding: 10px 0; background: #1e293b; border: 1px solid rgba(255,255,255,0.15); color: #94a3b8; font-weight: bold; border-radius: 8px; cursor: pointer; transition: all 0.2s;">VPD AU</button>
                         <div id="strat-btn-remote" style="display: none; flex: 1; padding: 10px 0; background: rgba(15,23,42,0.6); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; text-align: center; font-size: 13px; font-weight: bold; user-select: none;">REMOTE 60/60</div>
+                    </div>
+                </div>
+                <div id="vpd-auto-box" style="display: none; background: rgba(15,23,42,0.6); padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(56,189,248,0.25); margin-bottom: 14px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #38bdf8; font-weight: bold;">VPD AUTO</span>
+                        <select id="vpd-auto-day-select" onchange="onVpdDaySelectChange(this.value)" style="background: rgba(15,23,42,0.9); color: #38bdf8; font-size: 11px; font-weight: bold; border: 1px solid rgba(56,189,248,0.4); border-radius: 6px; padding: 2px 6px; outline: none; cursor: pointer;">
+                            <option value="1">Tag 1 (0.70 kPa)</option>
+                            <option value="2">Tag 2 (0.72 kPa)</option>
+                            <option value="3">Tag 3 (0.75 kPa)</option>
+                            <option value="4">Tag 4 (0.80 kPa)</option>
+                            <option value="5">Tag 5 (0.85 kPa)</option>
+                            <option value="6">Tag 6 (0.90 kPa)</option>
+                            <option value="7">Tag 7 (0.95 kPa)</option>
+                            <option value="8">Tag 8 (0.98 kPa)</option>
+                            <option value="9">Tag 9 (1.00 kPa)</option>
+                            <option value="10">Tag 10 (1.02 kPa)</option>
+                            <option value="11">Tag 11 (1.05 kPa)</option>
+                            <option value="12">Tag 12 (1.07 kPa)</option>
+                            <option value="13">Tag 13 (1.08 kPa)</option>
+                            <option value="14">Tag 14 (1.10 kPa)</option>
+                        </select>
+                    </div>
+                    <div id="vpd-auto-timeline" style="display: flex; gap: 3px; align-items: flex-end; height: 42px; padding: 4px; background: rgba(15,23,42,0.8); border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
+                        <!-- 14 sleek vertical candle bars without text -->
                     </div>
                 </div>
                 <div id="hygro-limit-box" style="display: none; background: rgba(15,23,42,0.5); padding: 10px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08); margin-bottom: 14px;">
                     <div style="font-size: 11px; color: #94a3b8; font-weight: 600; margin-bottom: 6px;">Hygro Limit (Schimmelschutz):</div>
                     <div style="display: flex; gap: 14px; font-size: 13px; font-weight: bold; margin-bottom: 8px;">
                         <label style="cursor: pointer; color: #22c55e; display: flex; align-items: center; gap: 4px;">
-                            <input type="radio" name="hygro_limit_radio" value="70" onchange="setDryStrategy(1, 70)" id="hl-70"> 70%
+                            <input type="radio" name="hygro_limit_radio" value="70" onchange="setDryStrategy(currentDryStrategy, 70)" id="hl-70"> 70%
                         </label>
                         <label style="cursor: pointer; color: #f97316; display: flex; align-items: center; gap: 4px;">
-                            <input type="radio" name="hygro_limit_radio" value="75" onchange="setDryStrategy(1, 75)" id="hl-75"> 75%
+                            <input type="radio" name="hygro_limit_radio" value="75" onchange="setDryStrategy(currentDryStrategy, 75)" id="hl-75"> 75%
                         </label>
                         <label style="cursor: pointer; color: #f87171; display: flex; align-items: center; gap: 4px;">
-                            <input type="radio" name="hygro_limit_radio" value="80" onchange="setDryStrategy(1, 80)" id="hl-80"> 80%
+                            <input type="radio" name="hygro_limit_radio" value="80" onchange="setDryStrategy(currentDryStrategy, 80)" id="hl-80"> 80%
                         </label>
                     </div>
                     <div style="font-size: 11px; color: #94a3b8; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 6px;">
@@ -2108,6 +2219,21 @@ void handlePortalRoot() {
             <button onclick="closeChartModal()" style="margin-top:18px; width:100%; padding:12px; border-radius:8px; border:none; background:#3b82f6; color:white; font-weight:bold; cursor:pointer; font-size:14px;">Schließen</button>
         </div>
     </div>
+
+    <div id="vpd-day-modal" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(15,23,42,0.88); backdrop-filter:blur(10px); z-index:1000; align-items:center; justify-content:center; padding:20px;">
+        <div style="background:#1e293b; border:1px solid rgba(56,189,248,0.3); border-radius:16px; padding:24px; max-width:420px; width:100%; box-shadow:0 25px 50px -12px rgba(0,0,0,0.8); text-align:center;">
+            <h3 id="vpd-day-modal-title" style="font-size:16px; color:#38bdf8; margin-bottom:10px;">Tag X aktivieren?</h3>
+            <p id="vpd-day-modal-desc" style="font-size:13px; color:#cbd5e1; margin-bottom:20px; line-height:1.5;">Möchtest du den Trocknungs-Fortschritt manuell auf <b>Tag X</b> umstellen?</p>
+            <div style="font-size:11px; color:#94a3b8; margin-bottom:15px; font-weight:bold;">Zum Bestätigen Button 2 Sekunden gedrückt halten:</div>
+            <div style="display:flex; gap:10px;">
+                <button onclick="closeVpdDayModal()" style="flex:1; padding:12px; background:#334155; border:none; color:#94a3b8; font-weight:bold; border-radius:8px; cursor:pointer;">Abbrechen</button>
+                <button id="btn-confirm-hold" style="flex:1.5; padding:12px; background:#ef4444; border:none; color:white; font-weight:bold; border-radius:8px; cursor:pointer; position:relative; overflow:hidden; user-select:none;">
+                    <span id="btn-confirm-text" style="position:relative; z-index:2;">Gedrückt halten...</span>
+                    <div id="btn-confirm-progress" style="position:absolute; top:0; left:0; height:100%; width:0%; background:#22c55e; transition: width 0.05s linear; z-index:1;"></div>
+                </button>
+            </div>
+        </div>
+    </div>
     <script>
         const wifiSSID = ")rawhtml";
     html += String(sysConfig.wifi_ssid);
@@ -2187,17 +2313,144 @@ void handlePortalRoot() {
         }
         let currentDryStrategy = 0;
         let currentHygroLimit = 70;
+        const vpdAutoProfileJS = [0.70, 0.72, 0.75, 0.80, 0.85, 0.90, 0.95, 0.98, 1.00, 1.02, 1.05, 1.07, 1.08, 1.10];
 
-        function setDryStrategy(mode, limit) {
+        function setDryStrategy(mode, limit, day) {
             currentDryStrategy = mode;
-            currentHygroLimit = limit;
-            fetch('/api/settings/dry_strategy?mode=' + mode + '&limit=' + limit, { method: 'POST' })
+            if (limit) currentHygroLimit = limit;
+            let url = '/api/settings/dry_strategy?mode=' + mode + '&limit=' + currentHygroLimit;
+            if (day) url += '&day=' + day;
+            fetch(url, { method: 'POST' })
                 .then(r => r.json())
                 .then(data => {
                     if (data.status === 'ok') {
                         updateData();
                     }
                 }).catch(e => console.error("Dry Strategy save error", e));
+        }
+
+        let currentVpdAutoActiveDay = 1;
+
+        function renderVpdAutoTimeline(activeDay) {
+            currentVpdAutoActiveDay = activeDay;
+            let container = document.getElementById('vpd-auto-timeline');
+            if (!container) return;
+            let html = "";
+            for (let day = 1; day <= 14; day++) {
+                let vpdVal = vpdAutoProfileJS[day - 1];
+                let heightPct = Math.round(((vpdVal - 0.50) / 0.70) * 100);
+                if (heightPct < 25) heightPct = 25;
+                if (heightPct > 100) heightPct = 100;
+
+                let barBg = "";
+                let borderStyle = "";
+                let isCurrent = (day === activeDay);
+
+                if (day < activeDay) {
+                    barBg = "#1e293b";
+                    borderStyle = "1px solid rgba(255,255,255,0.08)";
+                } else if (isCurrent) {
+                    barBg = "#ffffff";
+                    borderStyle = "2px solid #38bdf8";
+                } else {
+                    barBg = "#0284c7";
+                    borderStyle = "1px solid rgba(56,189,248,0.4)";
+                }
+
+                let activeClass = isCurrent ? "class='vpd-candle-active'" : "";
+
+                html += `<div onclick="openVpdDayModal(${day}, ${vpdVal.toFixed(2)})" style="flex:1; height:100%; display:flex; align-items:flex-end; cursor:pointer; user-select:none; padding: 0 1px;">
+                    <div ${activeClass} style="width:100%; height:${heightPct}%; background:${barBg}; border-radius:3px; border:${borderStyle}; transition:all 0.3s;" title="Tag ${day}: ${vpdVal.toFixed(2)} kPa"></div>
+                </div>`;
+            }
+            container.innerHTML = html;
+
+            let selectEl = document.getElementById('vpd-auto-day-select');
+            if (selectEl && document.activeElement !== selectEl) {
+                selectEl.value = activeDay;
+            }
+        }
+
+        function onVpdDaySelectChange(newDayVal) {
+            let day = parseInt(newDayVal);
+            if (isNaN(day) || day < 1 || day > 14) return;
+            let vpdVal = vpdAutoProfileJS[day - 1];
+            openVpdDayModal(day, vpdVal.toFixed(2));
+        }
+
+        let pendingTargetDay = 1;
+        let holdTimer = null;
+        let holdStartTime = 0;
+        let holdInterval = null;
+
+        function openVpdDayModal(day, vpdVal) {
+            pendingTargetDay = day;
+            document.getElementById('vpd-day-modal-title').innerText = "Tag " + day + " (Ziel: " + vpdVal + " kPa) aktivieren?";
+            document.getElementById('vpd-day-modal-desc').innerHTML = "Möchtest du den Trocknungs-Fortschritt manuell auf <b>Tag " + day + "</b> umstellen?";
+            resetHoldButton();
+            let modal = document.getElementById('vpd-day-modal');
+            if (modal) modal.style.display = 'flex';
+        }
+
+        function closeVpdDayModal() {
+            resetHoldButton();
+            let modal = document.getElementById('vpd-day-modal');
+            if (modal) modal.style.display = 'none';
+            let selectEl = document.getElementById('vpd-auto-day-select');
+            if (selectEl) selectEl.value = currentVpdAutoActiveDay;
+        }
+
+        function resetHoldButton() {
+            if (holdTimer) clearTimeout(holdTimer);
+            if (holdInterval) clearInterval(holdInterval);
+            holdTimer = null;
+            holdInterval = null;
+            let progressEl = document.getElementById('btn-confirm-progress');
+            let textEl = document.getElementById('btn-confirm-text');
+            if (progressEl) progressEl.style.width = '0%';
+            if (textEl) textEl.innerText = "Gedrückt halten...";
+        }
+
+        function initHoldButtonListeners() {
+            let btn = document.getElementById('btn-confirm-hold');
+            if (!btn) return;
+
+            function startHold(e) {
+                if (e.cancelable) e.preventDefault();
+                resetHoldButton();
+                holdStartTime = Date.now();
+                let progressEl = document.getElementById('btn-confirm-progress');
+                let textEl = document.getElementById('btn-confirm-text');
+                
+                holdInterval = setInterval(function() {
+                    let elapsed = Date.now() - holdStartTime;
+                    let pct = Math.min(100, Math.round((elapsed / 2000) * 100));
+                    if (progressEl) progressEl.style.width = pct + "%";
+                    if (pct < 100) {
+                        if (textEl) textEl.innerText = "Halten... " + ((2000 - elapsed)/1000).toFixed(1) + "s";
+                    }
+                }, 30);
+
+                holdTimer = setTimeout(function() {
+                    resetHoldButton();
+                    if (textEl) textEl.innerText = "Bestätigt! ✔";
+                    setDryStrategy(2, currentHygroLimit, pendingTargetDay);
+                    setTimeout(closeVpdDayModal, 400);
+                }, 2000);
+            }
+
+            function endHold(e) {
+                if (holdTimer) {
+                    resetHoldButton();
+                }
+            }
+
+            btn.addEventListener('mousedown', startHold);
+            btn.addEventListener('mouseup', endHold);
+            btn.addEventListener('mouseleave', endHold);
+            btn.addEventListener('touchstart', startHold, {passive: false});
+            btn.addEventListener('touchend', endHold);
+            btn.addEventListener('touchcancel', endHold);
         }
 
         function updateData() {
@@ -2223,27 +2476,30 @@ void handlePortalRoot() {
                     }
                     document.getElementById('device-title').innerText = titleText;
                     document.title = docTitle;
-                    document.getElementById('sys-ip').innerText = data.ip_address;
-                    document.getElementById('sys-ip').style.color = data.ip_address.startsWith("try") ? "#f87171" : "#38bdf8";
-                    document.getElementById('sys-mode').innerText = data.mode;
-                    let rssi = parseInt(data.rssi) || 0;
-                    if (rssi === 0) rssi = -100;
-                    let pct = Math.round((rssi + 100) * 10 / 7);
-                    if (pct < 0) pct = 0;
-                    if (pct > 100) pct = 100;
-                    const rssiBar = document.getElementById('sys-rssi-bar');
+
+                    document.getElementById('sys-ip').innerText = data.ip || "--";
+                    document.getElementById('sys-ip').style.color = "#4ade80";
+
+                    let modeText = "NORMAL (Master)";
+                    if (data.espnow_role === 1) modeText = "MASTER (ESP-NOW Host)";
+                    else if (data.espnow_role === 2) modeText = "SLAVE (Remote Client)";
+                    document.getElementById('sys-mode').innerText = modeText;
+
+                    let rssi = data.rssi !== undefined ? data.rssi : -100;
+                    let rssiBar = document.getElementById('sys-rssi-bar');
+                    let pct = Math.min(100, Math.max(0, (rssi + 100) * 2));
                     if (rssiBar) {
                         rssiBar.style.width = pct + "%";
                         if (rssi >= -50) {
-                            rssiBar.style.backgroundColor = "#22c55e"; // Hellgrün
+                            rssiBar.style.backgroundColor = "#22c55e";
                         } else if (rssi >= -70) {
-                            rssiBar.style.backgroundColor = "#84cc16"; // Grün
+                            rssiBar.style.backgroundColor = "#84cc16";
                         } else if (rssi >= -80) {
-                            rssiBar.style.backgroundColor = "#eab308"; // Gelb
+                            rssiBar.style.backgroundColor = "#eab308";
                         } else if (rssi >= -90) {
-                            rssiBar.style.backgroundColor = "#f97316"; // Orange
+                            rssiBar.style.backgroundColor = "#f97316";
                         } else {
-                            rssiBar.style.backgroundColor = "#ef4444"; // Rot
+                            rssiBar.style.backgroundColor = "#ef4444";
                         }
                     }
                     document.getElementById('sys-rssi').innerText = rssi + " dBm";
@@ -2288,17 +2544,20 @@ void handlePortalRoot() {
                         }
                     }
 
-                    // Update potentiometers
+                    // Update potentiometers & Strategy
                     let dryStrat = data.dry_strategy || 0;
                     let hygroLim = data.hygro_limit || 70;
+                    let vpdAutoDay = data.vpd_auto_day || 1;
                     currentDryStrategy = dryStrat;
                     currentHygroLimit = hygroLim;
 
                     let btn6060 = document.getElementById('strat-btn-6060');
                     let btnVpd = document.getElementById('strat-btn-vpd');
+                    let btnVpdAuto = document.getElementById('strat-btn-vpd-auto');
                     let btnRemote = document.getElementById('strat-btn-remote');
                     let stratSection = document.getElementById('strat-section');
                     let hlBox = document.getElementById('hygro-limit-box');
+                    let vpdAutoBox = document.getElementById('vpd-auto-box');
                     let potiALabel = document.getElementById('poti-a-label');
                     let hl70 = document.getElementById('hl-70');
                     let hl75 = document.getElementById('hl-75');
@@ -2316,15 +2575,18 @@ void handlePortalRoot() {
                     }
 
                     if (!hasAnyTempSensor) {
-                        if (data.espnow_role === 2) { // Slave without sensors
-                            let isOnline = (data.espnow_last_seen_ms !== -1) && (data.espnow_last_seen_ms <= 3500);
+                        if (data.espnow_role === 2) {
+                            let isOnline = (data.espnow_last_seen_ms !== -1) && (data.espnow_last_seen_ms <= 15000);
                             if (stratSection) stratSection.style.display = 'block';
                             if (btn6060) btn6060.style.display = 'none';
                             if (btnVpd) btnVpd.style.display = 'none';
+                            if (btnVpdAuto) btnVpdAuto.style.display = 'none';
                             if (btnRemote) {
                                 btnRemote.style.display = 'block';
                                 if (isOnline) {
-                                    if (dryStrat === 1) {
+                                    if (dryStrat === 2) {
+                                        btnRemote.innerHTML = "<span style='color: #a855f7; font-weight: bold;'>REMOTE</span> VPD AU";
+                                    } else if (dryStrat === 1) {
                                         btnRemote.innerHTML = "<span style='color: #f87171; font-weight: bold;'>REMOTE</span> VPD";
                                     } else {
                                         btnRemote.innerHTML = "<span style='color: #38bdf8; font-weight: bold;'>REMOTE</span> 60/60";
@@ -2334,12 +2596,13 @@ void handlePortalRoot() {
                                     if (data.espnow_failsafe_mode === 0) {
                                         localStratText = "50% OPEN";
                                     } else {
-                                        localStratText = (data.dry_strategy === 1) ? "VPD" : "60/60";
+                                        localStratText = (data.dry_strategy === 2) ? "VPD AU" : ((data.dry_strategy === 1) ? "VPD" : "60/60");
                                     }
                                     btnRemote.innerHTML = "<span style='color: #f87171; font-weight: bold;'>NOTFALL</span> " + localStratText;
                                 }
                             }
                             if (hlBox) hlBox.style.display = 'none';
+                            if (vpdAutoBox) vpdAutoBox.style.display = 'none';
                             if (potiALabel) potiALabel.innerText = 'Sollwert Feuchte (A):';
 
                             let potValA = data.potentiometers.poti_a_target_hum;
@@ -2350,9 +2613,10 @@ void handlePortalRoot() {
                                 displayA = "Rigoros AUF";
                             }
                             document.getElementById('poti-a').innerText = displayA;
-                        } else { // Master / Standalone without sensors: hide strategy section entirely
+                        } else {
                             if (stratSection) stratSection.style.display = 'none';
                             if (hlBox) hlBox.style.display = 'none';
+                            if (vpdAutoBox) vpdAutoBox.style.display = 'none';
                             if (potiALabel) potiALabel.innerText = 'Sollwert Feuchte (A):';
 
                             let potValA = data.potentiometers.poti_a_target_hum;
@@ -2364,33 +2628,60 @@ void handlePortalRoot() {
                             }
                             document.getElementById('poti-a').innerText = displayA;
                         }
-                    } else { // Has local temp sensor (Master, Standalone or Slave with sensors)
+                    } else {
                         if (stratSection) stratSection.style.display = 'block';
                         if (btnRemote) btnRemote.style.display = 'none';
                         if (btnVpd) btnVpd.style.display = 'block';
                         if (btn6060) btn6060.style.display = 'block';
+                        if (btnVpdAuto) btnVpdAuto.style.display = 'block';
 
-                        if (dryStrat === 1) { // VPD Mode
-                            if (btnVpd) { btnVpd.style.background = '#22c55e'; btnVpd.style.color = '#ffffff'; }
+                        if (dryStrat === 2) { // VPD AUTO Mode
+                            if (btnVpdAuto) { btnVpdAuto.style.background = '#22c55e'; btnVpdAuto.style.color = '#ffffff'; }
+                            if (btnVpd) { btnVpd.style.background = '#1e293b'; btnVpd.style.color = '#94a3b8'; }
                             if (btn6060) { btn6060.style.background = '#1e293b'; btn6060.style.color = '#94a3b8'; }
                             if (hlBox) hlBox.style.display = 'block';
+                            if (vpdAutoBox) vpdAutoBox.style.display = 'block';
+                            if (potiALabel) potiALabel.innerText = 'AUTO VPD (Tag ' + vpdAutoDay + '):';
+                            if (hygroLim === 80) { if (hl80) hl80.checked = true; }
+                            else if (hygroLim === 75) { if (hl75) hl75.checked = true; }
+                            else { if (hl70) hl70.checked = true; }
+
+                            let targetVpd = data.potentiometers.target_vpd || 1.00;
+                            let effRh = data.potentiometers.effective_target_rh || 60.0;
+                            let rawRh = data.potentiometers.raw_calculated_rh !== undefined ? data.potentiometers.raw_calculated_rh : effRh;
+                            let displayA = targetVpd.toFixed(2) + " kPa";
+                            document.getElementById('poti-a').innerText = displayA;
+
+                            renderVpdAutoTimeline(vpdAutoDay);
+
+                            let calcSollEl = document.getElementById('calc-soll-rh');
+                            let calcNoticeEl = document.getElementById('calc-limit-notice');
+                            if (calcSollEl) calcSollEl.innerText = rawRh.toFixed(1) + " %";
+                            if (calcNoticeEl) {
+                                if (rawRh > hygroLim) {
+                                    calcNoticeEl.style.display = 'block';
+                                    calcNoticeEl.innerText = "(limited to " + hygroLim + "%)";
+                                } else {
+                                    calcNoticeEl.style.display = 'none';
+                                }
+                            }
+                        } else if (dryStrat === 1) { // VPD Mode
+                            if (btnVpd) { btnVpd.style.background = '#22c55e'; btnVpd.style.color = '#ffffff'; }
+                            if (btnVpdAuto) { btnVpdAuto.style.background = '#1e293b'; btnVpdAuto.style.color = '#94a3b8'; }
+                            if (btn6060) { btn6060.style.background = '#1e293b'; btn6060.style.color = '#94a3b8'; }
+                            if (hlBox) hlBox.style.display = 'block';
+                            if (vpdAutoBox) vpdAutoBox.style.display = 'none';
                             if (potiALabel) potiALabel.innerText = 'Soll VPD:';
                             if (hygroLim === 80) { if (hl80) hl80.checked = true; }
                             else if (hygroLim === 75) { if (hl75) hl75.checked = true; }
                             else { if (hl70) hl70.checked = true; }
 
-                            let potValA = data.potentiometers.poti_a_target_hum;
                             let targetVpd = data.potentiometers.target_vpd || 1.00;
                             let effRh = data.potentiometers.effective_target_rh || 60.0;
                             let rawRh = data.potentiometers.raw_calculated_rh !== undefined ? data.potentiometers.raw_calculated_rh : effRh;
                             let displayA = targetVpd.toFixed(2) + " kPa";
-                            if (potValA <= 49.5) {
-                                displayA = "Rigoros ZU";
-                            } else if (potValA >= 70.5) {
-                                displayA = "Rigoros AUF";
-                            }
                             document.getElementById('poti-a').innerText = displayA;
-                            
+
                             let calcSollEl = document.getElementById('calc-soll-rh');
                             let calcNoticeEl = document.getElementById('calc-limit-notice');
                             if (calcSollEl) calcSollEl.innerText = rawRh.toFixed(1) + " %";
@@ -2405,7 +2696,9 @@ void handlePortalRoot() {
                         } else { // 60/60 Mode
                             if (btn6060) { btn6060.style.background = '#22c55e'; btn6060.style.color = '#ffffff'; }
                             if (btnVpd) { btnVpd.style.background = '#1e293b'; btnVpd.style.color = '#94a3b8'; }
+                            if (btnVpdAuto) { btnVpdAuto.style.background = '#1e293b'; btnVpdAuto.style.color = '#94a3b8'; }
                             if (hlBox) hlBox.style.display = 'none';
+                            if (vpdAutoBox) vpdAutoBox.style.display = 'none';
                             if (potiALabel) potiALabel.innerText = 'Sollwert Feuchte (A):';
 
                             let potValA = data.potentiometers.poti_a_target_hum;
@@ -3042,6 +3335,7 @@ void handlePortalRoot() {
 
         setInterval(updateData, 1000);
         setInterval(fetchHistory, 1000);
+        initHoldButtonListeners();
         updateData();
         fetchHistory();
     </script>
@@ -4366,8 +4660,27 @@ void handleBuzzerTestApi() {
 }
 
 void handleDryStrategyApi() {
+  time_t now = time(NULL);
+  uint32_t currentTs = (now > 1700000000UL) ? (uint32_t)now : (uint32_t)(millis() / 1000UL);
+
   if (server.hasArg("mode")) {
-    sysConfig.dry_strategy = server.arg("mode").toInt();
+    int mode = server.arg("mode").toInt();
+    if (mode >= 0 && mode <= 2) {
+      sysConfig.dry_strategy = mode;
+      if (mode == 2 && !server.hasArg("day")) {
+        if (sysConfig.vpd_auto_day < 1 || sysConfig.vpd_auto_day > 14) {
+          sysConfig.vpd_auto_day = 1;
+        }
+        sysConfig.vpd_auto_start_time = currentTs;
+      }
+    }
+  }
+  if (server.hasArg("day")) {
+    int day = server.arg("day").toInt();
+    if (day >= 1 && day <= 14) {
+      sysConfig.vpd_auto_day = day;
+      sysConfig.vpd_auto_start_time = currentTs;
+    }
   }
   if (server.hasArg("limit")) {
     sysConfig.hygro_limit = server.arg("limit").toInt();

@@ -16,7 +16,7 @@ def copy_firmware_files(source, target, env):
     firmware_dir = Path("FIRMWARE")
     firmware_dir.mkdir(exist_ok=True)
 
-    build_num = "64"
+    build_num = "65"
     build_num_file = Path(".build_number")
     if build_num_file.exists():
         build_num = build_num_file.read_text().strip()
@@ -31,13 +31,24 @@ def copy_firmware_files(source, target, env):
         src_path = build_dir / file_name
         if src_path.exists():
             dst_path = firmware_dir / file_name
+            # Delete existing target file first so Windows OS emits a FileDeleted event for VS Code / Git
+            if dst_path.exists():
+                try:
+                    dst_path.unlink()
+                except Exception:
+                    pass
             shutil.copy(src_path, dst_path)
             print(f" {CYAN}[copy_firmware]{RESET} Copied {GREEN}{file_name}{RESET} -> {YELLOW}{dst_path}{RESET}")
         else:
             print(f" {CYAN}[copy_firmware]{RESET} Note: {file_name} not found in build directory.")
 
-    # Write version.txt into FIRMWARE
+    # Write version.txt into FIRMWARE (delete first to trigger OS FileDeleted event)
     version_txt = firmware_dir / "version.txt"
+    if version_txt.exists():
+        try:
+            version_txt.unlink()
+        except Exception:
+            pass
     version_txt.write_text(build_num + "\n")
     print(f" {CYAN}[copy_firmware]{RESET} Written {GREEN}version.txt{RESET} -> {YELLOW}{version_txt}{RESET} ({GREEN}v{build_num}{RESET})")
 
