@@ -1374,7 +1374,7 @@ void updateServoRamping(bool updateTarget = false) {
     bool isSlaveMode =
         (sysConfig.espnow_role == 2 && strlen(sysConfig.espnow_peer_mac) > 0);
     bool isSlaveConnected = isSlaveMode && (lastEspNowRxTime != 0) &&
-                            (millis() - lastEspNowRxTime <= 60000);
+                            (millis() - lastEspNowRxTime <= 5000);
     bool isSlaveFailSafe = isSlaveMode && !isSlaveConnected;
 
     if (isSlaveConnected) {
@@ -1607,7 +1607,7 @@ void handleGetData() {
 
   bool isSlaveConnected =
       (sysConfig.espnow_role == 2 && lastEspNowRxTime != 0 &&
-       (millis() - lastEspNowRxTime <= 15000));
+       (millis() - lastEspNowRxTime <= 5000));
   doc["dry_strategy"] =
       isSlaveConnected ? remoteMasterDryStrategy : sysConfig.dry_strategy;
   doc["hygro_limit"] = sysConfig.hygro_limit;
@@ -1642,7 +1642,7 @@ void handleGetData() {
   doc["espnow_interval_ms"] = avgEspNowIntervalMs;
   bool isEspNowOnline = (sysConfig.espnow_role > 0) &&
                         (strlen(sysConfig.espnow_peer_mac) > 0) &&
-                        (lastSeenMs != -1) && (lastSeenMs <= 3500);
+                        (lastSeenMs != -1) && (lastSeenMs <= 5000);
   doc["espnow_pv_mismatch"] = isEspNowOnline && (remoteProtocolVersion > 0) &&
                               (remoteProtocolVersion != localProtocolVersion);
   doc["espnow_remote_pv"] = remoteProtocolVersion;
@@ -2313,6 +2313,7 @@ void handlePortalRoot() {
         }
         let currentDryStrategy = 0;
         let currentHygroLimit = 70;
+        let latestData = null;
         const vpdAutoProfileJS = [0.70, 0.72, 0.75, 0.80, 0.85, 0.90, 0.95, 0.98, 1.00, 1.02, 1.05, 1.07, 1.08, 1.10];
 
         function setDryStrategy(mode, limit, day) {
@@ -2460,6 +2461,7 @@ void handlePortalRoot() {
                     return response.json();
                 })
                 .then(data => {
+                    latestData = data;
                     let titleText = data.device_name;
                     let docTitle = data.device_name;
                     if (data.espnow_role === 1) {
@@ -2477,7 +2479,7 @@ void handlePortalRoot() {
                     document.getElementById('device-title').innerText = titleText;
                     document.title = docTitle;
 
-                    document.getElementById('sys-ip').innerText = data.ip || "--";
+                    document.getElementById('sys-ip').innerText = data.ip_address || data.ip || "--";
                     document.getElementById('sys-ip').style.color = "#4ade80";
 
                     let modeText = "NORMAL (Master)";
@@ -2574,60 +2576,58 @@ void handlePortalRoot() {
                         }
                     }
 
-                    if (!hasAnyTempSensor) {
-                        if (data.espnow_role === 2) {
-                            let isOnline = (data.espnow_last_seen_ms !== -1) && (data.espnow_last_seen_ms <= 15000);
-                            if (stratSection) stratSection.style.display = 'block';
-                            if (btn6060) btn6060.style.display = 'none';
-                            if (btnVpd) btnVpd.style.display = 'none';
-                            if (btnVpdAuto) btnVpdAuto.style.display = 'none';
-                            if (btnRemote) {
-                                btnRemote.style.display = 'block';
-                                if (isOnline) {
-                                    if (dryStrat === 2) {
-                                        btnRemote.innerHTML = "<span style='color: #a855f7; font-weight: bold;'>REMOTE</span> VPD AU";
-                                    } else if (dryStrat === 1) {
-                                        btnRemote.innerHTML = "<span style='color: #f87171; font-weight: bold;'>REMOTE</span> VPD";
-                                    } else {
-                                        btnRemote.innerHTML = "<span style='color: #38bdf8; font-weight: bold;'>REMOTE</span> 60/60";
-                                    }
+                    if (data.espnow_role === 2) {
+                        let isOnline = (data.espnow_last_seen_ms !== -1) && (data.espnow_last_seen_ms <= 5000);
+                        if (stratSection) stratSection.style.display = 'block';
+                        if (btn6060) btn6060.style.display = 'none';
+                        if (btnVpd) btnVpd.style.display = 'none';
+                        if (btnVpdAuto) btnVpdAuto.style.display = 'none';
+                        if (btnRemote) {
+                            btnRemote.style.display = 'block';
+                            if (isOnline) {
+                                if (dryStrat === 2) {
+                                    btnRemote.innerHTML = "<span style='color: #a855f7; font-weight: bold;'>REMOTE</span> VPD AU";
+                                } else if (dryStrat === 1) {
+                                    btnRemote.innerHTML = "<span style='color: #f87171; font-weight: bold;'>REMOTE</span> VPD";
                                 } else {
-                                    let localStratText = "";
-                                    if (data.espnow_failsafe_mode === 0) {
-                                        localStratText = "50% OPEN";
-                                    } else {
-                                        localStratText = (data.dry_strategy === 2) ? "VPD AU" : ((data.dry_strategy === 1) ? "VPD" : "60/60");
-                                    }
-                                    btnRemote.innerHTML = "<span style='color: #f87171; font-weight: bold;'>NOTFALL</span> " + localStratText;
+                                    btnRemote.innerHTML = "<span style='color: #38bdf8; font-weight: bold;'>REMOTE</span> 60/60";
                                 }
+                            } else {
+                                let localStratText = "";
+                                if (data.espnow_failsafe_mode === 0) {
+                                    localStratText = "50% OPEN";
+                                } else {
+                                    localStratText = (data.dry_strategy === 2) ? "VPD AU" : ((data.dry_strategy === 1) ? "VPD" : "60/60");
+                                }
+                                btnRemote.innerHTML = "<span style='color: #f87171; font-weight: bold;'>NOTFALL</span> " + localStratText;
                             }
-                            if (hlBox) hlBox.style.display = 'none';
-                            if (vpdAutoBox) vpdAutoBox.style.display = 'none';
-                            if (potiALabel) potiALabel.innerText = 'Sollwert Feuchte (A):';
-
-                            let potValA = data.potentiometers.poti_a_target_hum;
-                            let displayA = potValA.toFixed(0) + " %";
-                            if (potValA <= 49.5) {
-                                displayA = "Rigoros ZU";
-                            } else if (potValA >= 70.5) {
-                                displayA = "Rigoros AUF";
-                            }
-                            document.getElementById('poti-a').innerText = displayA;
-                        } else {
-                            if (stratSection) stratSection.style.display = 'none';
-                            if (hlBox) hlBox.style.display = 'none';
-                            if (vpdAutoBox) vpdAutoBox.style.display = 'none';
-                            if (potiALabel) potiALabel.innerText = 'Sollwert Feuchte (A):';
-
-                            let potValA = data.potentiometers.poti_a_target_hum;
-                            let displayA = potValA.toFixed(0) + " %";
-                            if (potValA <= 49.5) {
-                                displayA = "Rigoros ZU";
-                            } else if (potValA >= 70.5) {
-                                displayA = "Rigoros AUF";
-                            }
-                            document.getElementById('poti-a').innerText = displayA;
                         }
+                        if (hlBox) hlBox.style.display = 'none';
+                        if (vpdAutoBox) vpdAutoBox.style.display = 'none';
+                        if (potiALabel) potiALabel.innerText = 'Sollwert Feuchte (A):';
+
+                        let potValA = data.potentiometers.poti_a_target_hum;
+                        let displayA = potValA.toFixed(0) + " %";
+                        if (potValA <= 49.5) {
+                            displayA = "Rigoros ZU";
+                        } else if (potValA >= 70.5) {
+                            displayA = "Rigoros AUF";
+                        }
+                        document.getElementById('poti-a').innerText = displayA;
+                    } else if (!hasAnyTempSensor) {
+                        if (stratSection) stratSection.style.display = 'none';
+                        if (hlBox) hlBox.style.display = 'none';
+                        if (vpdAutoBox) vpdAutoBox.style.display = 'none';
+                        if (potiALabel) potiALabel.innerText = 'Sollwert Feuchte (A):';
+
+                        let potValA = data.potentiometers.poti_a_target_hum;
+                        let displayA = potValA.toFixed(0) + " %";
+                        if (potValA <= 49.5) {
+                            displayA = "Rigoros ZU";
+                        } else if (potValA >= 70.5) {
+                            displayA = "Rigoros AUF";
+                        }
+                        document.getElementById('poti-a').innerText = displayA;
                     } else {
                         if (stratSection) stratSection.style.display = 'block';
                         if (btnRemote) btnRemote.style.display = 'none';
@@ -2733,7 +2733,7 @@ void handlePortalRoot() {
                         if (lastSeenMs === -1) {
                             connEl.innerText = "Keine Verbindung";
                             connEl.style.color = "#f87171";
-                        } else if (lastSeenMs <= 3500) {
+                        } else if (lastSeenMs <= 5000) {
                             let intervalSec = ((data.espnow_interval_ms || 1000) / 1000).toFixed(3);
                             connEl.innerText = "Online (HB " + intervalSec + "s)";
                             connEl.style.color = "#4ade80";
@@ -2891,6 +2891,7 @@ void handlePortalRoot() {
             let minY = 0, maxY = 100, midY = 50;
             let labelMax = "100", labelMid = "50", labelMin = "0";
             let greenLineVal = null;
+            let lineStyleColor = '#22c55e'; // Green default for Temp & RH
 
             if (type === 'temp') {
                 maxY = 50; minY = 0; midY = 25;
@@ -2903,7 +2904,21 @@ void handlePortalRoot() {
             } else if (type === 'vpd') {
                 maxY = 3.0; minY = 0.0; midY = 1.5;
                 labelMax = "3.0"; labelMid = "1.5"; labelMin = "0.0";
-                greenLineVal = 0.8;
+                lineStyleColor = '#facc15'; // Bright Yellow for VPD target baseline line!
+                
+                let strat = (latestData && latestData.dry_strategy !== undefined) ? latestData.dry_strategy : currentDryStrategy;
+                if (strat === 2) {
+                    // VPD AUTO Mode: Dynamic baseline line tracks the active Day's target VPD value
+                    let vpdAutoDay = (latestData && latestData.vpd_auto_day) ? latestData.vpd_auto_day : 1;
+                    const vpdAutoProfileRef = [0.70, 0.72, 0.75, 0.80, 0.85, 0.90, 0.95, 0.98, 1.00, 1.02, 1.05, 1.07, 1.08, 1.10];
+                    greenLineVal = vpdAutoProfileRef[vpdAutoDay - 1];
+                } else if (strat === 1) {
+                    // VPD Mode: Baseline line tracks target VPD from Poti A
+                    greenLineVal = (latestData && latestData.potentiometers && latestData.potentiometers.target_vpd) ? latestData.potentiometers.target_vpd : 0.80;
+                } else {
+                    // 60/60 Mode: Target VPD baseline not applicable (hidden)
+                    greenLineVal = null;
+                }
             } else if (type === 'lux') {
                 maxY = 1000; minY = 0; midY = 500;
                 labelMax = "1000"; labelMid = "500"; labelMin = "0";
@@ -3010,7 +3025,7 @@ void handlePortalRoot() {
 
             if (greenLineVal !== null) {
                 const greenY = chartH - ((greenLineVal - minY) / (maxY - minY)) * chartH;
-                ctx.strokeStyle = '#22c55e';
+                ctx.strokeStyle = lineStyleColor;
                 ctx.lineWidth = 1.5 * dpr;
                 ctx.setLineDash([3 * dpr, 3 * dpr]);
                 ctx.beginPath();
@@ -3089,9 +3104,24 @@ void handlePortalRoot() {
             if (type.startsWith('lux_')) { index = parseInt(type.split('_')[1]); type = 'lux'; }
 
             let minY = 0, maxY = 100, labelMax = "100", labelMid = "50", labelMin = "0", greenLineVal = null;
+            let lineStyleColor = '#22c55e'; // Green default for Temp & RH
+
             if (type === 'temp') { maxY = 50; labelMax = "50"; labelMid = "25"; labelMin = "0"; greenLineVal = 25; }
             else if (type === 'hum') { maxY = 100; labelMax = "100"; labelMid = "50"; labelMin = "0"; greenLineVal = 50; }
-            else if (type === 'vpd') { maxY = 3.0; labelMax = "3.0"; labelMid = "1.5"; labelMin = "0.0"; greenLineVal = 0.8; }
+            else if (type === 'vpd') {
+                maxY = 3.0; labelMax = "3.0"; labelMid = "1.5"; labelMin = "0.0";
+                lineStyleColor = '#facc15'; // Bright Yellow for VPD target baseline line!
+                let strat = (latestData && latestData.dry_strategy !== undefined) ? latestData.dry_strategy : currentDryStrategy;
+                if (strat === 2) {
+                    let vpdAutoDay = (latestData && latestData.vpd_auto_day) ? latestData.vpd_auto_day : 1;
+                    const vpdAutoProfileRef = [0.70, 0.72, 0.75, 0.80, 0.85, 0.90, 0.95, 0.98, 1.00, 1.02, 1.05, 1.07, 1.08, 1.10];
+                    greenLineVal = vpdAutoProfileRef[vpdAutoDay - 1];
+                } else if (strat === 1) {
+                    greenLineVal = (latestData && latestData.potentiometers && latestData.potentiometers.target_vpd) ? latestData.potentiometers.target_vpd : 0.80;
+                } else {
+                    greenLineVal = null;
+                }
+            }
             else if (type === 'lux') { maxY = 1000; labelMax = "1000"; labelMid = "500"; labelMin = "0"; }
             else if (type === 'rotor' || type === 'rssi') { maxY = 100; labelMax = "100"; labelMid = "50"; labelMin = "0"; }
             else if (type === 'espnow' || type === 'mqtt') { maxY = 60; labelMax = "60"; labelMid = "30"; labelMin = "0"; }
@@ -3187,7 +3217,7 @@ void handlePortalRoot() {
 
             if (greenLineVal !== null) {
                 const greenY = chartH - ((greenLineVal - minY) / (maxY - minY)) * chartH;
-                ctx.strokeStyle = '#22c55e';
+                ctx.strokeStyle = lineStyleColor;
                 ctx.lineWidth = 2 * dpr;
                 ctx.setLineDash([5 * dpr, 5 * dpr]);
                 ctx.beginPath(); ctx.moveTo(marginL, greenY); ctx.lineTo(w, greenY); ctx.stroke();
