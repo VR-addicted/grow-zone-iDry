@@ -2972,14 +2972,11 @@ void handlePortalRoot() {
                 lineStyleColor = '#facc15'; // Bright Yellow for VPD target baseline line!
                 
                 let strat = (latestData && latestData.dry_strategy !== undefined) ? latestData.dry_strategy : currentDryStrategy;
-                if (strat === 2) {
-                    // VPD AUTO Mode: Dynamic baseline line tracks the active Day's target VPD value
-                    let vpdAutoDay = (latestData && latestData.vpd_auto_day) ? latestData.vpd_auto_day : 1;
-                    const vpdAutoProfileRef = [0.70, 0.72, 0.75, 0.80, 0.85, 0.90, 0.95, 0.98, 1.00, 1.02, 1.05, 1.07, 1.08, 1.10];
-                    greenLineVal = vpdAutoProfileRef[vpdAutoDay - 1];
-                } else if (strat === 1) {
-                    // VPD Mode: Baseline line tracks target VPD from Poti A
-                    greenLineVal = (latestData && latestData.potentiometers && latestData.potentiometers.target_vpd) ? latestData.potentiometers.target_vpd : 0.80;
+                if (strat === 2 || strat === 1) {
+                    // VPD AUTO & VPD Modes: Baseline line dynamically tracks temperature-compensated target VPD
+                    greenLineVal = (latestData && latestData.potentiometers && latestData.potentiometers.target_vpd !== undefined)
+                        ? latestData.potentiometers.target_vpd
+                        : ((latestData && latestData.vpd_auto_target_vpd !== undefined) ? latestData.vpd_auto_target_vpd : 0.85);
                 } else {
                     // 60/60 Mode: Target VPD baseline not applicable (hidden)
                     greenLineVal = null;
@@ -3177,12 +3174,10 @@ void handlePortalRoot() {
                 maxY = 3.0; labelMax = "3.0"; labelMid = "1.5"; labelMin = "0.0";
                 lineStyleColor = '#facc15'; // Bright Yellow for VPD target baseline line!
                 let strat = (latestData && latestData.dry_strategy !== undefined) ? latestData.dry_strategy : currentDryStrategy;
-                if (strat === 2) {
-                    let vpdAutoDay = (latestData && latestData.vpd_auto_day) ? latestData.vpd_auto_day : 1;
-                    const vpdAutoProfileRef = [0.70, 0.72, 0.75, 0.80, 0.85, 0.90, 0.95, 0.98, 1.00, 1.02, 1.05, 1.07, 1.08, 1.10];
-                    greenLineVal = vpdAutoProfileRef[vpdAutoDay - 1];
-                } else if (strat === 1) {
-                    greenLineVal = (latestData && latestData.potentiometers && latestData.potentiometers.target_vpd) ? latestData.potentiometers.target_vpd : 0.80;
+                if (strat === 2 || strat === 1) {
+                    greenLineVal = (latestData && latestData.potentiometers && latestData.potentiometers.target_vpd !== undefined)
+                        ? latestData.potentiometers.target_vpd
+                        : ((latestData && latestData.vpd_auto_target_vpd !== undefined) ? latestData.vpd_auto_target_vpd : 0.85);
                 } else {
                     greenLineVal = null;
                 }
