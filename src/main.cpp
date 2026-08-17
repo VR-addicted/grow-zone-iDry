@@ -1587,8 +1587,9 @@ void handleGetData() {
     doc["ip_address"] =
         "try to reconnect to: [" + String(sysConfig.wifi_ssid) + "]";
   }
-  doc["mode"] =
-      isHeadless ? "Headless Mode" : (isTFTMode ? "TFT Mode" : "e-Paper Mode");
+  doc["display_mode"] =
+      isHeadless ? "Headless (Kein Display)" : (isTFTMode ? "TFT (ILI9488 / ILI9341)" : "e-Paper (Waveshare GxEPD2)");
+  doc["mode"] = doc["display_mode"];
   doc["wifi_ssid"] = sysConfig.wifi_ssid; // Send SSID for client-side use
 
   // MQTT configuration and state details
@@ -2524,10 +2525,12 @@ void handlePortalRoot() {
                     document.getElementById('sys-ip').innerText = data.ip_address || data.ip || "--";
                     document.getElementById('sys-ip').style.color = "#4ade80";
 
-                    let modeText = "NORMAL (Master)";
-                    if (data.espnow_role === 1) modeText = "MASTER (ESP-NOW Host)";
-                    else if (data.espnow_role === 2) modeText = "SLAVE (Remote Client)";
-                    document.getElementById('sys-mode').innerText = modeText;
+                    let displayModeText = data.display_mode || data.mode || "e-Paper / TFT Auto-Detect";
+                    let modeEl = document.getElementById('sys-mode');
+                    if (modeEl) {
+                        modeEl.innerText = displayModeText;
+                        modeEl.style.color = "#38bdf8";
+                    }
 
                     let rssi = data.rssi !== undefined ? data.rssi : -100;
                     let rssiBar = document.getElementById('sys-rssi-bar');
