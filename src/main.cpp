@@ -1270,14 +1270,14 @@ void updateServoRamping(bool updateTarget = false) {
   potiCVal =
       (smoothedC / 4095.0F) * 59.0F; // 0 - 59 degrees virtual 0-point offset
 
-  // Compute VPD target (0.60 to 1.40 kPa) & Effective RH target (Landing smoothly on 62% RH / 0.85 kPa)
-  const float vpdAutoProfile[14] = {
-    0.70f, 0.72f, 0.74f, 0.76f, 0.78f, 0.80f, 0.81f, 0.82f, 0.83f, 0.84f, 0.85f, 0.85f, 0.85f, 0.85f
+  // Compute VPD target (Temperature-Compensated RH Target 68% -> 62% Curing Zone)
+  const float vpdAutoRhProfile[14] = {
+    68.0f, 67.0f, 66.0f, 65.0f, 64.5f, 64.0f, 63.5f, 63.0f, 62.6f, 62.3f, 62.0f, 62.0f, 62.0f, 62.0f
   };
 
-  if (sysConfig.dry_strategy == 2) { // VPD AUTO Mode
+  if (sysConfig.dry_strategy == 2) { // VPD AUTO Mode (Temperature-Compensated Target RH -> Dynamic VPD)
     int currentDay = getVpdAutoCurrentDay();
-    targetVpdVal = vpdAutoProfile[currentDay - 1];
+    float targetRh = vpdAutoRhProfile[currentDay - 1];
 
     float indoorTemp = NAN;
     if (tempSensors[0].active && !isnan(tempSensors[0].temperature)) {
@@ -1285,18 +1285,20 @@ void updateServoRamping(bool updateTarget = false) {
     } else if (tempSensors[1].active && !isnan(tempSensors[1].temperature)) {
       indoorTemp = tempSensors[1].temperature;
     }
+    if (isnan(indoorTemp)) indoorTemp = 20.0f; // Default fallback temperature
 
-    if (!isnan(indoorTemp)) {
-      float svp = calculateSVP(indoorTemp);
-      float avpTarget = svp - targetVpdVal;
-      rawCalculatedRh = (svp > 0.001f) ? (avpTarget / svp) * 100.0f : 60.0f;
-      float rhCalc = rawCalculatedRh;
-      if (rhCalc < 30.0f)
-        rhCalc = 30.0f;
-      if (rhCalc > (float)sysConfig.hygro_limit)
-        rhCalc = (float)sysConfig.hygro_limit;
-      effectiveTargetRh = (float)round(rhCalc * 10.0f) / 10.0f;
+    float svp = calculateSVP(indoorTemp);
+    targetVpdVal = svp * (1.0f - (targetRh / 100.0f));
+    targetVpdVal = (float)round(targetVpdVal * 100.0f) / 100.0f;
+    if (targetVpdVal < 0.50f) targetVpdVal = 0.50f;
+    if (targetVpdVal > 1.40f) targetVpdVal = 1.40f;
+
+    rawCalculatedRh = targetRh;
+    float rhCalc = rawCalculatedRh;
+    if (rhCalc > (float)sysConfig.hygro_limit) {
+      rhCalc = (float)sysConfig.hygro_limit;
     }
+    effectiveTargetRh = (float)round(rhCalc * 10.0f) / 10.0f;
   } else if (sysConfig.dry_strategy == 1) { // VPD Mode
     targetVpdVal = 0.60f + (smoothedA / 4095.0f) * 0.80f;
     targetVpdVal = (float)round(targetVpdVal * 100.0f) / 100.0f;
@@ -1655,12 +1657,24 @@ void handleGetData() {
       isSlaveConnected ? remoteMasterDryStrategy : sysConfig.dry_strategy;
   doc["hygro_limit"] = sysConfig.hygro_limit;
 
-  const float vpdAutoProfileRef[14] = {
-    0.70f, 0.72f, 0.74f, 0.76f, 0.78f, 0.80f, 0.81f, 0.82f, 0.83f, 0.84f, 0.85f, 0.85f, 0.85f, 0.85f
+  const float vpdAutoRhProfileRef[14] = {
+    68.0f, 67.0f, 66.0f, 65.0f, 64.5f, 64.0f, 63.5f, 63.0f, 62.6f, 62.3f, 62.0f, 62.0f, 62.0f, 62.0f
   };
   int calculatedAutoDay = getVpdAutoCurrentDay();
+  float autoTargetRh = vpdAutoRhProfileRef[calculatedAutoDay - 1];
+  float indoorTempRef = NAN;
+  if (tempSensors[0].active && !isnan(tempSensors[0].temperature)) {
+    indoorTempRef = tempSensors[0].temperature;
+  } else if (tempSensors[1].active && !isnan(tempSensors[1].temperature)) {
+    indoorTempRef = tempSensors[1].temperature;
+  }
+  if (isnan(indoorTempRef)) indoorTempRef = 20.0f;
+  float autoSvpRef = calculateSVP(indoorTempRef);
+  float autoTargetVpdRef = autoSvpRef * (1.0f - (autoTargetRh / 100.0f));
+
   doc["vpd_auto_day"] = calculatedAutoDay;
-  doc["vpd_auto_target_vpd"] = vpdAutoProfileRef[calculatedAutoDay - 1];
+  doc["vpd_auto_target_rh"] = autoTargetRh;
+  doc["vpd_auto_target_vpd"] = (float)round(autoTargetVpdRef * 100.0f) / 100.0f;
 
   doc["rotor_position"] = rotorPosition;
   doc["rotor_offset"] = potiCVal;
@@ -2052,20 +2066,20 @@ void handlePortalRoot() {
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
                         <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #38bdf8; font-weight: bold;">VPD AUTO</span>
                         <select id="vpd-auto-day-select" onchange="onVpdDaySelectChange(this.value)" style="background: rgba(15,23,42,0.9); color: #38bdf8; font-size: 11px; font-weight: bold; border: 1px solid rgba(56,189,248,0.4); border-radius: 6px; padding: 2px 6px; outline: none; cursor: pointer;">
-                            <option value="1">Tag 1 (0.70 kPa)</option>
-                            <option value="2">Tag 2 (0.72 kPa)</option>
-                            <option value="3">Tag 3 (0.74 kPa)</option>
-                            <option value="4">Tag 4 (0.76 kPa)</option>
-                            <option value="5">Tag 5 (0.78 kPa)</option>
-                            <option value="6">Tag 6 (0.80 kPa)</option>
-                            <option value="7">Tag 7 (0.81 kPa)</option>
-                            <option value="8">Tag 8 (0.82 kPa ~62%)</option>
-                            <option value="9">Tag 9 (0.83 kPa ~62%)</option>
-                            <option value="10">Tag 10 (0.84 kPa ~62%)</option>
-                            <option value="11">Tag 11 (0.85 kPa ~62%)</option>
-                            <option value="12">Tag 12 (0.85 kPa ~62%)</option>
-                            <option value="13">Tag 13 (0.85 kPa ~62%)</option>
-                            <option value="14">Tag 14 (0.85 kPa ~62%)</option>
+                            <option value="1">Tag 1 (68.0% RH)</option>
+                            <option value="2">Tag 2 (67.0% RH)</option>
+                            <option value="3">Tag 3 (66.0% RH)</option>
+                            <option value="4">Tag 4 (65.0% RH)</option>
+                            <option value="5">Tag 5 (64.5% RH)</option>
+                            <option value="6">Tag 6 (64.0% RH)</option>
+                            <option value="7">Tag 7 (63.5% RH)</option>
+                            <option value="8">Tag 8 (63.0% RH)</option>
+                            <option value="9">Tag 9 (62.6% RH)</option>
+                            <option value="10">Tag 10 (62.3% RH)</option>
+                            <option value="11">Tag 11 (62.0% RH ~Curing)</option>
+                            <option value="12">Tag 12 (62.0% RH ~Curing)</option>
+                            <option value="13">Tag 13 (62.0% RH ~Curing)</option>
+                            <option value="14">Tag 14 (62.0% RH ~Curing)</option>
                         </select>
                     </div>
                     <div id="vpd-auto-timeline" style="display: flex; gap: 3px; align-items: flex-end; height: 42px; padding: 4px; background: rgba(15,23,42,0.8); border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
@@ -2357,7 +2371,7 @@ void handlePortalRoot() {
         let currentDryStrategy = 0;
         let currentHygroLimit = 70;
         let latestData = null;
-        const vpdAutoProfileJS = [0.70, 0.72, 0.74, 0.76, 0.78, 0.80, 0.81, 0.82, 0.83, 0.84, 0.85, 0.85, 0.85, 0.85];
+        const vpdAutoRhProfileJS = [68.0, 67.0, 66.0, 65.0, 64.5, 64.0, 63.5, 63.0, 62.6, 62.3, 62.0, 62.0, 62.0, 62.0];
 
         function setDryStrategy(mode, limit, day) {
             currentDryStrategy = mode;
@@ -2381,8 +2395,8 @@ void handlePortalRoot() {
             if (!container) return;
             let html = "";
             for (let day = 1; day <= 14; day++) {
-                let vpdVal = vpdAutoProfileJS[day - 1];
-                let heightPct = Math.round(((vpdVal - 0.65) / 0.25) * 100);
+                let rhVal = vpdAutoRhProfileJS[day - 1];
+                let heightPct = Math.round(((rhVal - 60.0) / 10.0) * 100);
                 if (heightPct < 25) heightPct = 25;
                 if (heightPct > 100) heightPct = 100;
 
@@ -2403,8 +2417,8 @@ void handlePortalRoot() {
 
                 let activeClass = isCurrent ? "class='vpd-candle-active'" : "";
 
-                html += `<div onclick="openVpdDayModal(${day}, ${vpdVal.toFixed(2)})" style="flex:1; height:100%; display:flex; align-items:flex-end; cursor:pointer; user-select:none; padding: 0 1px;">
-                    <div ${activeClass} style="width:100%; height:${heightPct}%; background:${barBg}; border-radius:3px; border:${borderStyle}; transition:all 0.3s;" title="Tag ${day}: ${vpdVal.toFixed(2)} kPa"></div>
+                html += `<div onclick="openVpdDayModal(${day}, ${rhVal.toFixed(1)})" style="flex:1; height:100%; display:flex; align-items:flex-end; cursor:pointer; user-select:none; padding: 0 1px;">
+                    <div ${activeClass} style="width:100%; height:${heightPct}%; background:${barBg}; border-radius:3px; border:${borderStyle}; transition:all 0.3s;" title="Tag ${day}: ${rhVal.toFixed(1)}% RH (dyn. VPD)"></div>
                 </div>`;
             }
             container.innerHTML = html;
@@ -2418,8 +2432,8 @@ void handlePortalRoot() {
         function onVpdDaySelectChange(newDayVal) {
             let day = parseInt(newDayVal);
             if (isNaN(day) || day < 1 || day > 14) return;
-            let vpdVal = vpdAutoProfileJS[day - 1];
-            openVpdDayModal(day, vpdVal.toFixed(2));
+            let rhVal = vpdAutoRhProfileJS[day - 1];
+            openVpdDayModal(day, rhVal.toFixed(1));
         }
 
         let pendingTargetDay = 1;
@@ -2427,9 +2441,9 @@ void handlePortalRoot() {
         let holdStartTime = 0;
         let holdInterval = null;
 
-        function openVpdDayModal(day, vpdVal) {
+        function openVpdDayModal(day, rhVal) {
             pendingTargetDay = day;
-            document.getElementById('vpd-day-modal-title').innerText = "Tag " + day + " (Ziel: " + vpdVal + " kPa) aktivieren?";
+            document.getElementById('vpd-day-modal-title').innerText = "Tag " + day + " (Ziel: " + rhVal + "% RH) aktivieren?";
             document.getElementById('vpd-day-modal-desc').innerHTML = "Möchtest du den Trocknungs-Fortschritt manuell auf <b>Tag " + day + "</b> umstellen?";
             resetHoldButton();
             let modal = document.getElementById('vpd-day-modal');
