@@ -206,6 +206,7 @@ uint8_t remoteMasterDryStrategy = 0;
 
 unsigned long lastEspNowRxTime = 0;
 unsigned long lastEspNowTxSuccessTime = 0;
+static unsigned long lastWifiAttemptTime = 0;
 bool isPairingActive = false;
 unsigned long pairingStartTime = 0;
 int currentPairingChannel = 1;
@@ -518,8 +519,6 @@ void onEspNowDataRecv(const uint8_t *mac_addr, const uint8_t *data,
     // Only accept commands from paired peer (case insensitive MAC check)
     if (strcasecmp(macStr, sysConfig.espnow_peer_mac) == 0) {
       lastEspNowRxTime = millis();
-      Serial.printf("[ESP-NOW] Received command %d from peer %s\n", msg.command,
-                    macStr);
       if (msg.command == 1) {
         playWinnerMelody();
       } else if (msg.command == 2) {
@@ -534,6 +533,48 @@ void onEspNowDataRecv(const uint8_t *mac_addr, const uint8_t *data,
             if (diff >= 750 && diff <= 4000) {
               avgEspNowIntervalMs = diff;
               lastSlaveSyncRecvTime = millis();
+            }
+          }
+
+          // Construct and transmit Ping-Reply back to Master
+          EspNowMessage replyMsg;
+          replyMsg.pv = localProtocolVersion;
+          replyMsg.type = 2; // Data/Command
+          strlcpy(replyMsg.key, sysConfig.espnow_lmk, sizeof(replyMsg.key));
+          replyMsg.command = 3; // Ping-Reply
+          replyMsg.value = rotorPosition;
+          replyMsg.dry_strategy = sysConfig.dry_strategy;
+
+          uint8_t curChan = 1;
+          wifi_second_chan_t secondChan;
+          esp_wifi_get_channel(&curChan, &secondChan);
+
+          esp_now_peer_info_t peerInfo;
+          memset(&peerInfo, 0, sizeof(peerInfo));
+          memcpy(peerInfo.peer_addr, mac_addr, 6);
+          peerInfo.channel = (curChan > 0) ? curChan : 1;
+          peerInfo.ifidx = WIFI_IF_STA;
+          peerInfo.encrypt = false;
+          if (esp_now_is_peer_exist(mac_addr)) {
+            esp_now_mod_peer(&peerInfo);
+          } else {
+            esp_now_add_peer(&peerInfo);
+          }
+
+          esp_now_send(mac_addr, (uint8_t *)&replyMsg, sizeof(EspNowMessage));
+        }
+      } else if (msg.command == 3) {
+        // Ping-Reply from Slave received by Master
+        if (sysConfig.espnow_role == 1) {
+          lastEspNowTxSuccessTime = millis();
+          static unsigned long lastMasterSyncRecvTime = 0;
+          if (lastMasterSyncRecvTime == 0) {
+            lastMasterSyncRecvTime = millis();
+          } else {
+            unsigned long diff = millis() - lastMasterSyncRecvTime;
+            if (diff >= 750 && diff <= 4000) {
+              avgEspNowIntervalMs = diff;
+              lastMasterSyncRecvTime = millis();
             }
           }
         }
@@ -1608,6 +1649,7 @@ void handleGetData() {
   bool isSlaveConnected =
       (sysConfig.espnow_role == 2 && lastEspNowRxTime != 0 &&
        (millis() - lastEspNowRxTime <= 5000));
+  doc["is_slave_connected"] = isSlaveConnected;
   doc["dry_strategy"] =
       isSlaveConnected ? remoteMasterDryStrategy : sysConfig.dry_strategy;
   doc["hygro_limit"] = sysConfig.hygro_limit;
@@ -2577,7 +2619,7 @@ void handlePortalRoot() {
                     }
 
                     if (data.espnow_role === 2) {
-                        let isOnline = (data.espnow_last_seen_ms !== -1) && (data.espnow_last_seen_ms <= 5000);
+                        let isOnline = (data.is_slave_connected !== undefined) ? data.is_slave_connected : ((data.espnow_last_seen_ms !== -1) && (data.espnow_last_seen_ms <= 5000));
                         if (stratSection) stratSection.style.display = 'block';
                         if (btn6060) btn6060.style.display = 'none';
                         if (btnVpd) btnVpd.style.display = 'none';
@@ -2813,6 +2855,12 @@ void handlePortalRoot() {
                     if (espnowConn) {
                         espnowConn.innerText = "Offline (Reconnecting)";
                         espnowConn.style.color = "#f87171";
+                    }
+
+                    let btnRemote = document.getElementById('strat-btn-remote');
+                    if (btnRemote) {
+                        btnRemote.style.display = 'block';
+                        btnRemote.innerHTML = "<span style='color: #f87171; font-weight: bold;'>NOTFALL</span> LINK LOST";
                     }
 
                     let mqttStatus = document.getElementById('mqtt-status');
@@ -6025,14 +6073,15 @@ void loop() {
       }
     }
 
-    // Only hop channels if NOT connected to Wi-Fi AP (prevent Wi-Fi
-    // disconnects)
+    // Only hop channels if NOT connected to Wi-Fi AP and NOT during an active WiFi.begin() reconnect scan
     if (WiFi.status() != WL_CONNECTED) {
       if (lastEspNowRxTime == 0 || (millis() - lastEspNowRxTime > 3000)) {
-        if (millis() - lastSlaveScanHopTime >= 350) {
-          lastSlaveScanHopTime = millis();
-          slaveScanChan = (slaveScanChan % 13) + 1;
-          esp_wifi_set_channel(slaveScanChan, WIFI_SECOND_CHAN_NONE);
+        if (millis() - lastWifiAttemptTime > 3000) {
+          if (millis() - lastSlaveScanHopTime >= 350) {
+            lastSlaveScanHopTime = millis();
+            slaveScanChan = (slaveScanChan % 13) + 1;
+            esp_wifi_set_channel(slaveScanChan, WIFI_SECOND_CHAN_NONE);
+          }
         }
       }
     }
@@ -6189,6 +6238,7 @@ void loop() {
     if (millis() - lastWifiCheck >=
         5000) { // Try to reconnect every 5s if disconnected
       lastWifiCheck = millis();
+      lastWifiAttemptTime = millis();
       Serial.printf("[WLAN] Connection lost. Reconnecting to %s...\n",
                     sysConfig.wifi_ssid);
       WiFi.begin(sysConfig.wifi_ssid, sysConfig.wifi_pass);
