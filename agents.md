@@ -78,7 +78,7 @@ Do not change SPI, I2C, ADC, or actuator pin assignments:
 
 ## VPD Strategy Engine & Hygro-Limit Mold Protection
 * **3-Mode Strategy Selection:** Configurable via Web UI or HTTP POST `/api/settings/dry_strategy?mode=X&limit=Y` (`sysConfig.dry_strategy`: 0 = 60/60 Mode, 1 = VPD Mode, 2 = VPD AUTO Mode; `sysConfig.hygro_limit`: 70, 75, or 80%).
-* **VPD AUTO 14-Day Progression:** 14-day automated Curing schedule (Day 1: 0.70 kPa ~70% RH ... Day 14: 1.10 kPa ~55% RH). Days > 14 remain clamped at Day 14 target (1.10 kPa). Includes interactive 14-option dropdown selector and 42px candle strip with continuous pulsing glow (`@keyframes vpd-candle-pulse`) on active day.
+* **VPD AUTO 14-Day Progression:** 14-day automated Curing schedule (Day 1: 0.70 kPa ~68% RH ... Day 11–14+: 0.85 kPa ~62% RH Goldstandard Curing Landing Zone). Days > 14 remain clamped at Day 14 target (0.85 kPa / 62% RH). Includes interactive 14-option dropdown selector and 42px candle strip with continuous pulsing glow (`@keyframes vpd-candle-pulse`) on active day.
 * **Yellow Dotted Baseline Line (`#facc15`):** Both VPD charts (`VPD Innen` and `VPD Außen`) and the 24h Zoom Modal draw a bright yellow dashed target line tracking the active day's target VPD in `VPD AUTO` mode or manual target VPD in `VPD` mode. Hidden in `60/60` mode.
 * **Poti A Re-Mapping (VPD Mode):** 0% to 100% knob position maps to **0.60 kPa to 1.40 kPa**, with **1.00 kPa at 50% midpoint knob position**. (In `VPD AUTO` mode, Poti A is overridden by current day target VPD).
 * **Hygro-Limit Mold Protection Cap:** Target RH derived from VPD is clamped: $RH_{\text{effective}} = \min(RH_{\text{calculated}}, \text{HygroLimit})$.

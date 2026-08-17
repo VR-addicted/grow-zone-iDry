@@ -167,11 +167,15 @@ Die Displays teilen sich denselben physischen SPI-Kabelbaum (JST-Stecker am YD-E
 
 ## 🚀 Key Features & Algorithmen
 
-### 1. Simple 1-Knob Steuerung & Diskrete Zonen
-* Die Steuerung erfolgt im Alltag über **einen einzigen Drehknopf (Poti A)**:
+### 1. Simple 1-Knob Steuerung, 3 Trocknungsstrategien & Diskrete Zonen
+* **1-Knob Steuerung (Poti A):**
   * $\le 49\%$: **Rigoros ZU** ($0\%$ Öffnung, Klappe schließt vollständig).
   * $\ge 71\%$: **Rigoros AUF** ($100\%$ Öffnung, maximale Entlüftung).
   * $50 - 70\%$: Stufenlose proportionale Feuchteregelung.
+* **3 Trocknungsstrategien:**
+  * **60/60 Mode:** Klassische manuelle Ziel-Luftfeuchte über Poti A.
+  * **VPD Mode:** Manuelle Ziel-VPD Einstellung ($0.60$ bis $1.40\text{ kPa}$) über Poti A.
+  * **VPD AUTO Mode:** Automatischer 14-Tage Reifungs- & Trocknungsplan. Rrampt das Sättigungsdefizit sanft von $0.70\text{ kPa}$ (~$68\%\text{ RH}$) auf den Goldstandard-Curing-Zielwert von **$0.85\text{ kPa}$ (~$62\%\text{ RH}$)** ab Tag 11–14+ für perfekte Terpenschonung ohne Übertrocknung.
 
 ### 2. Nahtlose Home Assistant Integration (1-Klick Auto-Discovery)
 * **Zero-Configuration:** Home Assistant erkennt iDry-26 unter *Einstellungen ➔ Geräte & Dienste ➔ MQTT* **vollautomatisch**.

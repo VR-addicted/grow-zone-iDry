@@ -1270,9 +1270,9 @@ void updateServoRamping(bool updateTarget = false) {
   potiCVal =
       (smoothedC / 4095.0F) * 59.0F; // 0 - 59 degrees virtual 0-point offset
 
-  // Compute VPD target (0.60 to 1.40 kPa) & Effective RH target
+  // Compute VPD target (0.60 to 1.40 kPa) & Effective RH target (Landing smoothly on 62% RH / 0.85 kPa)
   const float vpdAutoProfile[14] = {
-    0.70f, 0.72f, 0.75f, 0.80f, 0.85f, 0.90f, 0.95f, 0.98f, 1.00f, 1.02f, 1.05f, 1.07f, 1.08f, 1.10f
+    0.70f, 0.72f, 0.74f, 0.76f, 0.78f, 0.80f, 0.81f, 0.82f, 0.83f, 0.84f, 0.85f, 0.85f, 0.85f, 0.85f
   };
 
   if (sysConfig.dry_strategy == 2) { // VPD AUTO Mode
@@ -1656,7 +1656,7 @@ void handleGetData() {
   doc["hygro_limit"] = sysConfig.hygro_limit;
 
   const float vpdAutoProfileRef[14] = {
-    0.70f, 0.72f, 0.75f, 0.80f, 0.85f, 0.90f, 0.95f, 0.98f, 1.00f, 1.02f, 1.05f, 1.07f, 1.08f, 1.10f
+    0.70f, 0.72f, 0.74f, 0.76f, 0.78f, 0.80f, 0.81f, 0.82f, 0.83f, 0.84f, 0.85f, 0.85f, 0.85f, 0.85f
   };
   int calculatedAutoDay = getVpdAutoCurrentDay();
   doc["vpd_auto_day"] = calculatedAutoDay;
@@ -2054,18 +2054,18 @@ void handlePortalRoot() {
                         <select id="vpd-auto-day-select" onchange="onVpdDaySelectChange(this.value)" style="background: rgba(15,23,42,0.9); color: #38bdf8; font-size: 11px; font-weight: bold; border: 1px solid rgba(56,189,248,0.4); border-radius: 6px; padding: 2px 6px; outline: none; cursor: pointer;">
                             <option value="1">Tag 1 (0.70 kPa)</option>
                             <option value="2">Tag 2 (0.72 kPa)</option>
-                            <option value="3">Tag 3 (0.75 kPa)</option>
-                            <option value="4">Tag 4 (0.80 kPa)</option>
-                            <option value="5">Tag 5 (0.85 kPa)</option>
-                            <option value="6">Tag 6 (0.90 kPa)</option>
-                            <option value="7">Tag 7 (0.95 kPa)</option>
-                            <option value="8">Tag 8 (0.98 kPa)</option>
-                            <option value="9">Tag 9 (1.00 kPa)</option>
-                            <option value="10">Tag 10 (1.02 kPa)</option>
-                            <option value="11">Tag 11 (1.05 kPa)</option>
-                            <option value="12">Tag 12 (1.07 kPa)</option>
-                            <option value="13">Tag 13 (1.08 kPa)</option>
-                            <option value="14">Tag 14 (1.10 kPa)</option>
+                            <option value="3">Tag 3 (0.74 kPa)</option>
+                            <option value="4">Tag 4 (0.76 kPa)</option>
+                            <option value="5">Tag 5 (0.78 kPa)</option>
+                            <option value="6">Tag 6 (0.80 kPa)</option>
+                            <option value="7">Tag 7 (0.81 kPa)</option>
+                            <option value="8">Tag 8 (0.82 kPa ~62%)</option>
+                            <option value="9">Tag 9 (0.83 kPa ~62%)</option>
+                            <option value="10">Tag 10 (0.84 kPa ~62%)</option>
+                            <option value="11">Tag 11 (0.85 kPa ~62%)</option>
+                            <option value="12">Tag 12 (0.85 kPa ~62%)</option>
+                            <option value="13">Tag 13 (0.85 kPa ~62%)</option>
+                            <option value="14">Tag 14 (0.85 kPa ~62%)</option>
                         </select>
                     </div>
                     <div id="vpd-auto-timeline" style="display: flex; gap: 3px; align-items: flex-end; height: 42px; padding: 4px; background: rgba(15,23,42,0.8); border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
@@ -2357,7 +2357,7 @@ void handlePortalRoot() {
         let currentDryStrategy = 0;
         let currentHygroLimit = 70;
         let latestData = null;
-        const vpdAutoProfileJS = [0.70, 0.72, 0.75, 0.80, 0.85, 0.90, 0.95, 0.98, 1.00, 1.02, 1.05, 1.07, 1.08, 1.10];
+        const vpdAutoProfileJS = [0.70, 0.72, 0.74, 0.76, 0.78, 0.80, 0.81, 0.82, 0.83, 0.84, 0.85, 0.85, 0.85, 0.85];
 
         function setDryStrategy(mode, limit, day) {
             currentDryStrategy = mode;
@@ -2382,7 +2382,7 @@ void handlePortalRoot() {
             let html = "";
             for (let day = 1; day <= 14; day++) {
                 let vpdVal = vpdAutoProfileJS[day - 1];
-                let heightPct = Math.round(((vpdVal - 0.50) / 0.70) * 100);
+                let heightPct = Math.round(((vpdVal - 0.65) / 0.25) * 100);
                 if (heightPct < 25) heightPct = 25;
                 if (heightPct > 100) heightPct = 100;
 
