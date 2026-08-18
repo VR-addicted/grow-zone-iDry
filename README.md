@@ -105,13 +105,24 @@ Im Gegensatz zu gewöhnlichen Umluftventilatoren im Trockenzelt (die die Luft nu
 * **Auto-Bookmark Titel:** Der HTML-Header liefert dynamisch `<title>IDRY-26 Master</title>` bzw. `<title>IDRY-26 Slave</title>` aus.
 * **1s Rot-Pulsierender Update-Rahmen:** Ein schonender Hintergrund-Check (beim Boot, alle 10 min und beim Aufruf von `/firmware`) prüft GitHub-Releases. Liegt ein Update vor, pulsiert der Rahmen des `Firmware & OTA Update` Buttons im 1-Sekunden-Takt rot mit einem leuchtenden Halo.
 
-### 7. Adaptives Use-Case UI (Intelligentes Ausblenden inaktiver Module)
-* **Keine Info-Überflutung:** Das Web-UI analysiert im Sekundentakt die angeschlossenen Hardware-Sensoren, Displays und die ESP-NOW Rolle (Standalone, Master, Slave, Slave ohne Sensoren).
-* **Dynamisches Ein-/Ausblenden:**
-  * **Fehlt ein Sensor (z. B. auf Slaves ohne eigene Fühler):** Die Trocknungsstrategie-Buttons (60/60 & VPD) sowie die Hygro-Limit Schimmelschutzbox werden automatisch ausgeblendet, damit keine irrelevanten Knöpfe die Ansicht überfrachten.
-  * **Master-Slave Synchronisation (ESP-NOW V3):** Der Slave zeigt bei aufgerufener Funkverbindung ein breites, nicht anklickbares Badge `<span style="color:#38bdf8;">REMOTE</span> 60/60` bzw. `<span style="color:#f87171;">REMOTE</span> VPD` an, das sich live im 1-Sekunden-Takt mit der gewählten Master-Strategie synchronisiert.
-  * **Ausfallsicherer Notfall-Indikator:** Bricht die Funkverbindung ab (nach 3.5s verfehlten Heartbeats), wechselt das Badge automatisch auf `<span style="color:#f87171;">NOTFALL</span> 50% OPEN` oder `<span style="color:#f87171;">NOTFALL</span> 60/60` / `VPD`, um sofort die lokal greifende Notfall-Strategie zu signalisieren!
-  * **100% Ungefilterter Realtime-Benchmark:** Die ESP-NOW Verbindungsanzeige liefert die echten, unverschleierten Millisekunden-Abstände (`HB 0.998s`, `HB 1.004s`), isoliert auf gültige Data-Sync Pakete.
+### 8. Live ESP-NOW RF Log Streaming & Dual Terminal Consoles (v100-v103)
+* **T-Pipe RF Pipeline:** Master streamt alle `addAppLog(...)` Systemnachrichten live über 182-Byte ESP-NOW Funkpakete (`EspNowLogMessage`, Typ 3) an den Slave.
+* **Fern-Diagnose bei Server-Hängern:** Selbst wenn der Webserver des Masters unter hoher Last stehen bleibt, können alle Log-Meldungen des Masters live über die Web-Oberfläche des Slaves überwacht werden!
+* **Rollenbasierte Farb-Themes (Diagonale Farbsymmetrie):**
+  * **Master Terminal Box:** Cyan-Blauer Header (`#38bdf8`), blauer Rahmen & blaue Schrift (passend zum blauen Master-UI).
+  * **Slave Terminal Box:** Soft-Roter Header (`#f87171`), roter Rahmen & rote Schrift (passend zum roten Slave-UI).
+
+### 9. 3-Stufiges Log-Filter-System & 300-Zeilen Browser-Historie (v104-v106)
+* **3-Stufige Nachrichten-Klassifizierung:**
+  * **Level 1 (`STAT` / `ALARM`):** Status-Meldungen, Telemetrie, Buzzer-Test-Chimes & Schimmelschutz-Alarme. **Immer sichtbar!**
+  * **Level 2 (`WARN`):** Warnmeldungen, Sensor-Resets & Verbindungsabbrüche.
+  * **Level 3 (`DBG `):** Gesprächiger Verbose-Debug-Modus mit kontinuierlicher Ausgabe von Sensor-Messwerten (BME280/SHT3x/TSL2561), VPD-Matrix-Berechnungen, Servo-Winkeln & ESP-NOW Pings.
+* **Unabhängige Konsolen-Filter:** Jede Konsole (`Local` & `Remote`) besitzt in ihrer Überschrift eigene Filter-Radiobuttons `( ) L1  ( ) L2  (•) L3` zur clientseitigen Echtzeit-Gliederung.
+* **300-Zeilen Scrollable Memory:** Speichert im Browser-RAM bis zu 300 historische Log-Zeilen pro Terminal mit geschmeidigem Scrollbalken.
+
+### 10. Automatische Flash-Persistenz bei Mitternachts-Tageswechsel (v107)
+* **Mitternachts-Flash-Sync:** Beim automatischen Tageswechsel von `VPD AUTO` Punkt 00:00 Uhr Mitternacht (oder nach 24 Stunden) wird der neue Tag (z. B. Tag 8) sofort dauerhaft in `/config.json` via LittleFS Flash gespeichert.
+* **Neustart- & Update-Sicher:** Nach Firmware-Updates oder Stromausfällen startet das Gerät garantiert auf dem aktuellsten Tagesstand neu, ohne auf frühere Tage zurückzusprengen!
 
 ---
 
@@ -175,7 +186,7 @@ Die Displays teilen sich denselben physischen SPI-Kabelbaum (JST-Stecker am YD-E
 * **3 Trocknungsstrategien:**
   * **60/60 Mode:** Klassische manuelle Ziel-Luftfeuchte über Poti A.
   * **VPD Mode:** Manuelle Ziel-VPD Einstellung ($0.60$ bis $1.40\text{ kPa}$) über Poti A.
-  * **VPD AUTO Mode:** Automatischer 14-Tage Reifungs- & Trocknungsplan. Rrampt das Sättigungsdefizit sanft von $0.70\text{ kPa}$ (~$68\%\text{ RH}$) auf den Goldstandard-Curing-Zielwert von **$0.85\text{ kPa}$ (~$62\%\text{ RH}$)** ab Tag 11–14+ für perfekte Terpenschonung ohne Übertrocknung.
+  * **VPD AUTO Mode:** Automatischer 14-Tage Reifungs- & Trocknungsplan. Nutzt eine wissenschaftliche **21x14 Temperatur-Matrix ($15\text{ bis }35\text{ °C}$)**, die das Sättigungsdefizit dynamisch an die echte Raumtemperatur anpasst und an Tag 11–14+ exakt im **Goldstandard-Curing-Zielwert von $0.85\text{ kPa}$ (~$62\%\text{ RH}$)** landet. Visualisiert über ein interaktives **2D-Heatmap Canvas mit Fadenkreuz & Laser-Dot** im Web-UI!
 
 ### 2. Nahtlose Home Assistant Integration (1-Klick Auto-Discovery)
 * **Zero-Configuration:** Home Assistant erkennt iDry-26 unter *Einstellungen ➔ Geräte & Dienste ➔ MQTT* **vollautomatisch**.

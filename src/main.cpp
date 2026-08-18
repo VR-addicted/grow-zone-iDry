@@ -159,7 +159,77 @@ struct Config {
   int hygro_limit = 70;         // Hygro-Limit Safety Cap: 70 or 75 (%)
   int vpd_auto_day = 1;         // Active day index for VPD AUTO mode (1 to 14)
   unsigned long vpd_auto_start_time = 0; // Timestamp when active day was set
+  int log_level = 3;            // Log Level: 1 = Status/Telemetry, 2 = Warn/Alarm, 3 = Verbose Debug (Default Level 3)
 };
+
+// --- T-PIPE LIVE SYSTEM LOGGING ARCHITECTURE ---
+#define APP_LOG_BUFFER_SIZE 16
+#define APP_LOG_LINE_MAX 120
+
+struct AppLogLine {
+  char text[APP_LOG_LINE_MAX];
+};
+
+AppLogLine appLogBuffer[APP_LOG_BUFFER_SIZE];
+int appLogHead = 0;
+int appLogCount = 0;
+
+AppLogLine remoteAppLogBuffer[APP_LOG_BUFFER_SIZE];
+int remoteAppLogHead = 0;
+int remoteAppLogCount = 0;
+
+void addRemoteAppLog(const char* logLine) {
+  AppLogLine& line = remoteAppLogBuffer[remoteAppLogHead];
+  snprintf(line.text, sizeof(line.text), "%s", logLine);
+  remoteAppLogHead = (remoteAppLogHead + 1) % APP_LOG_BUFFER_SIZE;
+  if (remoteAppLogCount < APP_LOG_BUFFER_SIZE) {
+    remoteAppLogCount++;
+  }
+}
+
+void sendEspNowLogLine(const char* logLine);
+extern Config sysConfig;
+
+void addAppLogEx(uint8_t level, const char* format, ...) {
+  if (level > (uint8_t)sysConfig.log_level) return;
+
+  char rawMsg[APP_LOG_LINE_MAX];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(rawMsg, sizeof(rawMsg), format, args);
+  va_end(args);
+
+  // 1. Output to USB UART Serial
+  Serial.println(rawMsg);
+
+  // 2. Add timestamp [HH:MM:SS] and tag [L1]/[L2]/[L3]
+  uint32_t sec = millis() / 1000;
+  uint32_t hrs = (sec / 3600) % 24;
+  uint32_t mins = (sec % 3600) / 60;
+  uint32_t secs = sec % 60;
+
+  const char* lvlTag = (level == 1) ? "STAT" : ((level == 2) ? "WARN" : "DBG ");
+
+  AppLogLine& line = appLogBuffer[appLogHead];
+  snprintf(line.text, sizeof(line.text), "[%02u:%02u:%02u] [%s] %s", hrs, mins, secs, lvlTag, rawMsg);
+
+  appLogHead = (appLogHead + 1) % APP_LOG_BUFFER_SIZE;
+  if (appLogCount < APP_LOG_BUFFER_SIZE) {
+    appLogCount++;
+  }
+
+  // 3. Stream log line to peer over ESP-NOW
+  sendEspNowLogLine(line.text);
+}
+
+void addAppLog(const char* format, ...) {
+  char rawMsg[APP_LOG_LINE_MAX];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(rawMsg, sizeof(rawMsg), format, args);
+  va_end(args);
+  addAppLogEx(1, "%s", rawMsg);
+}
 
 Config sysConfig;
 bool isConfigLoaded = false;
@@ -185,11 +255,57 @@ bool servoMoving = false;
 bool servoFinishedPending = false;
 unsigned long servoFinishedTime = 0;
 
+// 21x14 Scientific Temperature-VPD Matrix for Temperatures 15°C to 35°C across Days 1 to 14
+const float vpdTempMatrix[21][14] = {
+  // 15°C
+  {0.56f, 0.58f, 0.59f, 0.61f, 0.62f, 0.64f, 0.65f, 0.66f, 0.66f, 0.67f, 0.68f, 0.68f, 0.68f, 0.68f},
+  // 16°C
+  {0.59f, 0.60f, 0.62f, 0.64f, 0.66f, 0.67f, 0.68f, 0.69f, 0.70f, 0.71f, 0.71f, 0.71f, 0.71f, 0.71f},
+  // 17°C
+  {0.62f, 0.63f, 0.65f, 0.67f, 0.69f, 0.70f, 0.71f, 0.72f, 0.73f, 0.74f, 0.75f, 0.75f, 0.75f, 0.75f},
+  // 18°C
+  {0.64f, 0.66f, 0.68f, 0.70f, 0.72f, 0.74f, 0.75f, 0.75f, 0.76f, 0.77f, 0.78f, 0.78f, 0.78f, 0.78f},
+  // 19°C
+  {0.67f, 0.69f, 0.71f, 0.73f, 0.75f, 0.77f, 0.78f, 0.79f, 0.80f, 0.81f, 0.82f, 0.82f, 0.82f, 0.82f},
+  // 20°C (Baseline)
+  {0.70f, 0.72f, 0.74f, 0.76f, 0.78f, 0.80f, 0.81f, 0.82f, 0.83f, 0.84f, 0.85f, 0.85f, 0.85f, 0.85f},
+  // 21°C
+  {0.73f, 0.75f, 0.77f, 0.79f, 0.81f, 0.83f, 0.84f, 0.85f, 0.86f, 0.87f, 0.88f, 0.88f, 0.88f, 0.88f},
+  // 22°C
+  {0.76f, 0.78f, 0.80f, 0.82f, 0.84f, 0.86f, 0.87f, 0.89f, 0.90f, 0.91f, 0.92f, 0.92f, 0.92f, 0.92f},
+  // 23°C
+  {0.78f, 0.81f, 0.83f, 0.85f, 0.87f, 0.90f, 0.91f, 0.92f, 0.93f, 0.94f, 0.95f, 0.95f, 0.95f, 0.95f},
+  // 24°C
+  {0.81f, 0.84f, 0.86f, 0.88f, 0.90f, 0.93f, 0.94f, 0.95f, 0.96f, 0.97f, 0.99f, 0.99f, 0.99f, 0.99f},
+  // 25°C
+  {0.84f, 0.86f, 0.89f, 0.91f, 0.94f, 0.96f, 0.97f, 0.98f, 1.00f, 1.01f, 1.02f, 1.02f, 1.02f, 1.02f},
+  // 26°C
+  {0.87f, 0.89f, 0.92f, 0.94f, 0.97f, 0.99f, 1.00f, 1.02f, 1.03f, 1.04f, 1.05f, 1.05f, 1.05f, 1.05f},
+  // 27°C
+  {0.90f, 0.92f, 0.95f, 0.97f, 1.00f, 1.02f, 1.04f, 1.05f, 1.06f, 1.07f, 1.09f, 1.09f, 1.09f, 1.09f},
+  // 28°C
+  {0.92f, 0.95f, 0.98f, 1.00f, 1.03f, 1.06f, 1.07f, 1.08f, 1.10f, 1.11f, 1.12f, 1.12f, 1.12f, 1.12f},
+  // 29°C
+  {0.95f, 0.98f, 1.01f, 1.03f, 1.06f, 1.09f, 1.10f, 1.12f, 1.13f, 1.14f, 1.16f, 1.16f, 1.16f, 1.16f},
+  // 30°C
+  {0.98f, 1.01f, 1.04f, 1.06f, 1.10f, 1.12f, 1.13f, 1.15f, 1.16f, 1.18f, 1.19f, 1.19f, 1.19f, 1.19f},
+  // 31°C
+  {1.01f, 1.04f, 1.07f, 1.10f, 1.13f, 1.16f, 1.17f, 1.19f, 1.20f, 1.21f, 1.23f, 1.23f, 1.23f, 1.23f},
+  // 32°C
+  {1.04f, 1.07f, 1.10f, 1.13f, 1.16f, 1.19f, 1.20f, 1.22f, 1.23f, 1.25f, 1.26f, 1.26f, 1.26f, 1.26f},
+  // 33°C
+  {1.06f, 1.10f, 1.13f, 1.16f, 1.19f, 1.22f, 1.24f, 1.25f, 1.27f, 1.28f, 1.30f, 1.30f, 1.30f, 1.30f},
+  // 34°C
+  {1.09f, 1.13f, 1.16f, 1.19f, 1.23f, 1.26f, 1.27f, 1.29f, 1.30f, 1.32f, 1.33f, 1.33f, 1.33f, 1.33f},
+  // 35°C
+  {1.12f, 1.16f, 1.19f, 1.22f, 1.26f, 1.29f, 1.30f, 1.32f, 1.34f, 1.35f, 1.37f, 1.37f, 1.37f, 1.37f}
+};
+
 // =====================================================================
 // ESP-NOW & PAIRING STATE MACHINE & WI-FI CHANNEL HOPS
 // =====================================================================
 struct __attribute__((packed)) EspNowMessage {
-  uint8_t pv;      // Protocol version (currently 3)
+  uint8_t pv;      // Protocol version (currently 4)
   uint8_t type;    // 0 = Pairing Beacon, 1 = Pairing Response, 2 = Command/Data
   char key[33];    // LMK hex string exchanged during pairing
   uint8_t command; // 0 = None, 1 = Play Winner Melody, 2 = Ping-Request/Data
@@ -198,11 +314,39 @@ struct __attribute__((packed)) EspNowMessage {
   uint8_t dry_strategy; // Dry Strategy: 0 = 60/60 Mode, 1 = VPD Mode
 };
 
-const uint8_t localProtocolVersion = 3;
+struct __attribute__((packed)) EspNowLogMessage {
+  uint8_t pv;        // Protocol version (4)
+  uint8_t type;      // 3 = Log Line Stream
+  char logText[180]; // Timestamped log message string
+};
+
+const uint8_t localProtocolVersion = 4;
 uint8_t remoteProtocolVersion = 0;
 bool protocolVersionMismatch = false;
 uint32_t avgEspNowIntervalMs = 1000;
 uint8_t remoteMasterDryStrategy = 0;
+
+static bool isSendingLogPacket = false;
+void sendEspNowLogLine(const char* logLine) {
+  if (isSendingLogPacket) return;
+  if (sysConfig.espnow_role == 0 || strlen(sysConfig.espnow_peer_mac) == 0) return;
+
+  uint8_t peerMac[6];
+  if (sscanf(sysConfig.espnow_peer_mac, "%x:%x:%x:%x:%x:%x",
+             &peerMac[0], &peerMac[1], &peerMac[2],
+             &peerMac[3], &peerMac[4], &peerMac[5]) != 6) {
+    return;
+  }
+
+  isSendingLogPacket = true;
+  EspNowLogMessage logPacket;
+  logPacket.pv = localProtocolVersion;
+  logPacket.type = 3; // Log Line Stream
+  strlcpy(logPacket.logText, logLine, sizeof(logPacket.logText));
+
+  esp_now_send(peerMac, (uint8_t*)&logPacket, sizeof(EspNowLogMessage));
+  isSendingLogPacket = false;
+}
 
 unsigned long lastEspNowRxTime = 0;
 unsigned long lastEspNowTxSuccessTime = 0;
@@ -397,6 +541,19 @@ void onEspNowDataRecv(const uint8_t *mac_addr, const uint8_t *data,
   sprintf(macStr, "%02X:%02X:%02X:%02X:%02X:%02X", mac_addr[0], mac_addr[1],
           mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
 
+  if (data_len == (int)sizeof(EspNowLogMessage)) {
+    EspNowLogMessage logMsg;
+    memcpy(&logMsg, data, sizeof(EspNowLogMessage));
+    if (logMsg.pv == localProtocolVersion && logMsg.type == 3) {
+      addRemoteAppLog(logMsg.logText);
+      bool isFromPeer = (strlen(sysConfig.espnow_peer_mac) > 0 && strcasecmp(macStr, sysConfig.espnow_peer_mac) == 0);
+      if (isFromPeer || isPairingActive) {
+        lastEspNowRxTime = millis();
+      }
+    }
+    return;
+  }
+
   if (data_len < (int)sizeof(EspNowMessage)) {
     Serial.printf("[ESP-NOW] Packet too small from %s: %d bytes\n", macStr,
                   data_len);
@@ -525,6 +682,7 @@ void onEspNowDataRecv(const uint8_t *mac_addr, const uint8_t *data,
         if (sysConfig.espnow_role == 2) {
           rotorPosition = msg.value;
           remoteMasterDryStrategy = msg.dry_strategy;
+          addAppLogEx(3, "[ESP-NOW] RX Sync from Master: Rotor=%.0f%%, Mode=%d", msg.value, msg.dry_strategy);
           static unsigned long lastSlaveSyncRecvTime = 0;
           if (lastSlaveSyncRecvTime == 0) {
             lastSlaveSyncRecvTime = millis();
@@ -752,6 +910,7 @@ bool loadConfiguration() {
   sysConfig.hygro_limit = doc["hygro_limit"] | 70;
   sysConfig.vpd_auto_day = doc["vpd_auto_day"] | 1;
   sysConfig.vpd_auto_start_time = doc["vpd_auto_start_time"] | 0;
+  sysConfig.log_level = doc["log_level"] | 3;
 
   Serial.println("[LittleFS] Configuration successfully loaded.");
   return true;
@@ -785,6 +944,7 @@ bool saveConfiguration() {
   doc["hygro_limit"] = sysConfig.hygro_limit;
   doc["vpd_auto_day"] = sysConfig.vpd_auto_day;
   doc["vpd_auto_start_time"] = sysConfig.vpd_auto_start_time;
+  doc["log_level"] = sysConfig.log_level;
 
   // Compute and embed CRC32 checksum
   uint32_t crcVal = calculateConfigCRC(doc);
@@ -1137,6 +1297,11 @@ void readSensors() {
           tempSensors[i].temperature = t;
           tempSensors[i].humidity = h;
           tempSensors[i].pressure = p;
+          static unsigned long lastBmeLog[2] = {0, 0};
+          if (millis() - lastBmeLog[i] >= 10000) {
+            lastBmeLog[i] = millis();
+            addAppLogEx(3, "[Sensor] BME280 (0x%02X): %.1f C, %.1f %%, %.1f hPa", tempSensors[i].address, t, h, p);
+          }
         }
       } else if (tempSensors[i].type == TempSensor::TYPE_SHT3X &&
                  tempSensors[i].sht) {
@@ -1160,6 +1325,11 @@ void readSensors() {
           tempSensors[i].temperature = t;
           tempSensors[i].humidity = h;
           tempSensors[i].pressure = NAN;
+          static unsigned long lastShtLog[2] = {0, 0};
+          if (millis() - lastShtLog[i] >= 10000) {
+            lastShtLog[i] = millis();
+            addAppLogEx(3, "[Sensor] SHT3x (0x%02X): %.1f C, %.1f %%", tempSensors[i].address, t, h);
+          }
         }
       }
     }
@@ -1196,6 +1366,7 @@ int getVpdAutoCurrentDay() {
     } else {
       sysConfig.vpd_auto_start_time = (uint32_t)(millis() / 1000UL);
     }
+    saveConfiguration();
   }
 
   time_t now = time(NULL);
@@ -1210,20 +1381,32 @@ int getVpdAutoCurrentDay() {
     time_t startMidnight = mktime(&tmStart);
     time_t nowMidnight = mktime(&tmNow);
 
-    if (nowMidnight >= startMidnight) {
+    if (nowMidnight > startMidnight) {
       daysPassed = (int)((nowMidnight - startMidnight) / 86400UL);
     }
-  } else {
+  } else if (sysConfig.vpd_auto_start_time <= 1700000000UL) {
     unsigned long currentSec = millis() / 1000UL;
     if (currentSec >= sysConfig.vpd_auto_start_time) {
       daysPassed = (int)((currentSec - sysConfig.vpd_auto_start_time) / 86400UL);
     }
   }
 
-  int currentDay = sysConfig.vpd_auto_day + daysPassed;
-  if (currentDay < 1) currentDay = 1;
-  if (currentDay > 14) currentDay = 14;
-  return currentDay;
+  if (daysPassed > 0) {
+    int newDay = sysConfig.vpd_auto_day + daysPassed;
+    if (newDay > 14) newDay = 14;
+    if (newDay != sysConfig.vpd_auto_day) {
+      sysConfig.vpd_auto_day = newDay;
+      if (now > 1700000000UL) {
+        sysConfig.vpd_auto_start_time = (uint32_t)now;
+      } else {
+        sysConfig.vpd_auto_start_time = (uint32_t)(millis() / 1000UL);
+      }
+      saveConfiguration(); // PERSIST AUTOMATIC DAY ROLLOVER TO FLASH!
+      addAppLogEx(1, "[VPD AUTO] Midnight Rollover! Auto-advanced & saved active Day %d to Flash.", sysConfig.vpd_auto_day);
+    }
+  }
+
+  return sysConfig.vpd_auto_day;
 }
 
 void updateServoRamping(bool updateTarget = false) {
@@ -1270,15 +1453,8 @@ void updateServoRamping(bool updateTarget = false) {
   potiCVal =
       (smoothedC / 4095.0F) * 59.0F; // 0 - 59 degrees virtual 0-point offset
 
-  // Compute VPD target (Temperature-Compensated RH Target 68% -> 62% Curing Zone)
-  const float vpdAutoRhProfile[14] = {
-    68.0f, 67.0f, 66.0f, 65.0f, 64.5f, 64.0f, 63.5f, 63.0f, 62.6f, 62.3f, 62.0f, 62.0f, 62.0f, 62.0f
-  };
-
-  if (sysConfig.dry_strategy == 2) { // VPD AUTO Mode (Temperature-Compensated Target RH -> Dynamic VPD)
+  if (sysConfig.dry_strategy == 2) { // VPD AUTO Mode (Scientific 21x14 Temperature-Compensated Matrix)
     int currentDay = getVpdAutoCurrentDay();
-    float targetRh = vpdAutoRhProfile[currentDay - 1];
-
     float indoorTemp = NAN;
     if (tempSensors[0].active && !isnan(tempSensors[0].temperature)) {
       indoorTemp = tempSensors[0].temperature;
@@ -1287,18 +1463,26 @@ void updateServoRamping(bool updateTarget = false) {
     }
     if (isnan(indoorTemp)) indoorTemp = 20.0f; // Default fallback temperature
 
-    float svp = calculateSVP(indoorTemp);
-    targetVpdVal = svp * (1.0f - (targetRh / 100.0f));
-    targetVpdVal = (float)round(targetVpdVal * 100.0f) / 100.0f;
-    if (targetVpdVal < 0.50f) targetVpdVal = 0.50f;
-    if (targetVpdVal > 1.40f) targetVpdVal = 1.40f;
+    int tempIdx = (int)round(indoorTemp) - 15;
+    if (tempIdx < 0) tempIdx = 0;
+    if (tempIdx > 20) tempIdx = 20;
 
-    rawCalculatedRh = targetRh;
+    targetVpdVal = vpdTempMatrix[tempIdx][currentDay - 1];
+
+    float svp = calculateSVP(indoorTemp);
+    float avpTarget = svp - targetVpdVal;
+    rawCalculatedRh = (svp > 0.001f) ? (avpTarget / svp) * 100.0f : 60.0f;
     float rhCalc = rawCalculatedRh;
+    if (rhCalc < 30.0f) rhCalc = 30.0f;
     if (rhCalc > (float)sysConfig.hygro_limit) {
       rhCalc = (float)sysConfig.hygro_limit;
     }
     effectiveTargetRh = (float)round(rhCalc * 10.0f) / 10.0f;
+    static unsigned long lastVpdAutoLog = 0;
+    if (millis() - lastVpdAutoLog >= 15000) {
+      lastVpdAutoLog = millis();
+      addAppLogEx(3, "[VPD AUTO] Day %d @ %.1f C -> Matrix Target VPD: %.2f kPa, RH Target: %.1f %%", currentDay, indoorTemp, targetVpdVal, effectiveTargetRh);
+    }
   } else if (sysConfig.dry_strategy == 1) { // VPD Mode
     targetVpdVal = 0.60f + (smoothedA / 4095.0f) * 0.80f;
     targetVpdVal = (float)round(targetVpdVal * 100.0f) / 100.0f;
@@ -1557,6 +1741,7 @@ void updateServoRamping(bool updateTarget = false) {
       servoMoveDuration = (0.5f + (diff / 121.0f) * 4.5f) * 1000.0f;
       servoMoving = true;
       servoFinishedPending = false; // Reset shutdown timer
+      addAppLogEx(3, "[Servo] Shutter: %.0f%% -> Angle: %.1f deg (Move time: %.1fs)", rotorPosition, targetServoAngle, servoMoveDuration/1000.0f);
     }
   }
 }
@@ -1657,11 +1842,6 @@ void handleGetData() {
       isSlaveConnected ? remoteMasterDryStrategy : sysConfig.dry_strategy;
   doc["hygro_limit"] = sysConfig.hygro_limit;
 
-  const float vpdAutoRhProfileRef[14] = {
-    68.0f, 67.0f, 66.0f, 65.0f, 64.5f, 64.0f, 63.5f, 63.0f, 62.6f, 62.3f, 62.0f, 62.0f, 62.0f, 62.0f
-  };
-  int calculatedAutoDay = getVpdAutoCurrentDay();
-  float autoTargetRh = vpdAutoRhProfileRef[calculatedAutoDay - 1];
   float indoorTempRef = NAN;
   if (tempSensors[0].active && !isnan(tempSensors[0].temperature)) {
     indoorTempRef = tempSensors[0].temperature;
@@ -1669,12 +1849,20 @@ void handleGetData() {
     indoorTempRef = tempSensors[1].temperature;
   }
   if (isnan(indoorTempRef)) indoorTempRef = 20.0f;
-  float autoSvpRef = calculateSVP(indoorTempRef);
-  float autoTargetVpdRef = autoSvpRef * (1.0f - (autoTargetRh / 100.0f));
+  int tempIdxRef = (int)round(indoorTempRef) - 15;
+  if (tempIdxRef < 0) tempIdxRef = 0;
+  if (tempIdxRef > 20) tempIdxRef = 20;
+
+  int calculatedAutoDay = getVpdAutoCurrentDay();
+  float autoTargetVpd = vpdTempMatrix[tempIdxRef][calculatedAutoDay - 1];
+  float autoSvp = calculateSVP(indoorTempRef);
+  float autoTargetRh = (autoSvp > 0.001f) ? ((autoSvp - autoTargetVpd) / autoSvp) * 100.0f : 62.0f;
 
   doc["vpd_auto_day"] = calculatedAutoDay;
-  doc["vpd_auto_target_rh"] = autoTargetRh;
-  doc["vpd_auto_target_vpd"] = (float)round(autoTargetVpdRef * 100.0f) / 100.0f;
+  doc["vpd_auto_target_vpd"] = autoTargetVpd;
+  doc["vpd_auto_base_vpd"] = vpdTempMatrix[5][calculatedAutoDay - 1]; // 20°C baseline target VPD
+  doc["vpd_auto_target_rh"] = (float)round(autoTargetRh * 10.0f) / 10.0f;
+  doc["indoor_temp_rounded"] = (int)round(indoorTempRef);
 
   doc["rotor_position"] = rotorPosition;
   doc["rotor_offset"] = potiCVal;
@@ -1713,6 +1901,23 @@ void handleGetData() {
   doc["online_version"] = cachedOnlineVersion;
   doc["fw_version"] = "1." + String(localFirmwareVersion);
   doc["loops_per_sec"] = loopsPerSecond;
+  doc["free_heap"] = ESP.getFreeHeap();
+  doc["max_alloc_heap"] = ESP.getMaxAllocHeap();
+  doc["log_level"] = sysConfig.log_level;
+
+  JsonArray logsArr = doc["sys_logs"].to<JsonArray>();
+  int logStart = (appLogCount < APP_LOG_BUFFER_SIZE) ? 0 : appLogHead;
+  for (int i = 0; i < appLogCount; i++) {
+    int idx = (logStart + i) % APP_LOG_BUFFER_SIZE;
+    logsArr.add(appLogBuffer[idx].text);
+  }
+
+  JsonArray remoteLogsArr = doc["remote_sys_logs"].to<JsonArray>();
+  int rLogStart = (remoteAppLogCount < APP_LOG_BUFFER_SIZE) ? 0 : remoteAppLogHead;
+  for (int i = 0; i < remoteAppLogCount; i++) {
+    int idx = (rLogStart + i) % APP_LOG_BUFFER_SIZE;
+    remoteLogsArr.add(remoteAppLogBuffer[idx].text);
+  }
 
   String jsonResponse;
   serializeJson(doc, jsonResponse);
@@ -1884,6 +2089,18 @@ void handleGetHistory() {
   String jsonResponse;
   serializeJson(doc, jsonResponse);
   server.send(200, "application/json", jsonResponse);
+}
+
+void handleSetLogLevel() {
+  if (server.hasArg("level")) {
+    int lvl = server.arg("level").toInt();
+    if (lvl >= 1 && lvl <= 3) {
+      sysConfig.log_level = lvl;
+      saveConfiguration();
+      addAppLogEx(1, "[Config] System Log Level changed to Level %d", lvl);
+    }
+  }
+  server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
 
 // Active connection check (TCP Handshake time heuristic to verify gateway is
@@ -2066,23 +2283,26 @@ void handlePortalRoot() {
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
                         <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #38bdf8; font-weight: bold;">VPD AUTO</span>
                         <select id="vpd-auto-day-select" onchange="onVpdDaySelectChange(this.value)" style="background: rgba(15,23,42,0.9); color: #38bdf8; font-size: 11px; font-weight: bold; border: 1px solid rgba(56,189,248,0.4); border-radius: 6px; padding: 2px 6px; outline: none; cursor: pointer;">
-                            <option value="1">Tag 1 (68.0% RH)</option>
-                            <option value="2">Tag 2 (67.0% RH)</option>
-                            <option value="3">Tag 3 (66.0% RH)</option>
-                            <option value="4">Tag 4 (65.0% RH)</option>
-                            <option value="5">Tag 5 (64.5% RH)</option>
-                            <option value="6">Tag 6 (64.0% RH)</option>
-                            <option value="7">Tag 7 (63.5% RH)</option>
-                            <option value="8">Tag 8 (63.0% RH)</option>
-                            <option value="9">Tag 9 (62.6% RH)</option>
-                            <option value="10">Tag 10 (62.3% RH)</option>
-                            <option value="11">Tag 11 (62.0% RH ~Curing)</option>
-                            <option value="12">Tag 12 (62.0% RH ~Curing)</option>
-                            <option value="13">Tag 13 (62.0% RH ~Curing)</option>
-                            <option value="14">Tag 14 (62.0% RH ~Curing)</option>
+                            <option value="1">Tag 1</option>
+                            <option value="2">Tag 2</option>
+                            <option value="3">Tag 3</option>
+                            <option value="4">Tag 4</option>
+                            <option value="5">Tag 5</option>
+                            <option value="6">Tag 6</option>
+                            <option value="7">Tag 7</option>
+                            <option value="8">Tag 8</option>
+                            <option value="9">Tag 9</option>
+                            <option value="10">Tag 10</option>
+                            <option value="11">Tag 11 (~Curing)</option>
+                            <option value="12">Tag 12 (~Curing)</option>
+                            <option value="13">Tag 13 (~Curing)</option>
+                            <option value="14">Tag 14 (~Curing)</option>
                         </select>
                     </div>
-                    <div id="vpd-auto-timeline" style="display: flex; gap: 3px; align-items: flex-end; height: 42px; padding: 4px; background: rgba(15,23,42,0.8); border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
+                    <div style="position: relative; width: 100%; height: 100px; background: rgba(15,23,42,0.8); border-radius: 8px; border: 1px solid rgba(255,255,255,0.08); overflow: hidden; margin-bottom: 6px;">
+                        <canvas id="vpd-heatmap-canvas" onpointerdown="handleHeatmapPointer(event)" onpointermove="if(event.buttons) handleHeatmapPointer(event)" onpointerup="stopHeatmapInspection()" onpointerleave="stopHeatmapInspection()" style="width: 100%; height: 100px; display: block; cursor: crosshair; touch-action: none;"></canvas>
+                    </div>
+                    <div id="vpd-auto-timeline" style="display: flex; gap: 3px; align-items: flex-end; height: 28px; padding: 3px; background: rgba(15,23,42,0.8); border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
                         <!-- 14 sleek vertical candle bars without text -->
                     </div>
                 </div>
@@ -2246,20 +2466,41 @@ void handlePortalRoot() {
                 </span>
                 <span class="val" id="sys-rssi">--</span>
             </div>
-            <div class="value-row"><span>Watchdog reset weekly:</span><span class="val" id="sys-wd-reset" style="font-family: monospace;">--</span></div>
-            <details open class="hist-toggle" id="details-rssi" ontoggle="renderAllCharts()">
-                <summary>2h Signalstärke Verlauf (RSSI)</summary>
-                <div class="spark-box" onclick="openChartZoom('rssi', 'WLAN Signalstärke Verlauf')">
-                    <canvas id="cv-rssi"></canvas>
+            <details open class="hist-toggle" id="details-logs-local" style="margin-top: 12px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 8px;">
+                <summary style="font-size: 11px; color: #38bdf8; cursor: pointer; user-select: none; font-weight: bold; outline: none; display: flex; justify-content: space-between; align-items: center;">
+                    <span id="label-log-local">▼ Local Terminal Console</span>
+                    <div style="display: flex; gap: 8px; font-family: monospace; font-size: 10px; background: rgba(0,0,0,0.25); padding: 2px 6px; border-radius: 6px;" onclick="event.stopPropagation();">
+                        <span style="color: #94a3b8; font-size: 9.5px; margin-right: 2px;">Filter:</span>
+                        <label style="cursor: pointer; color: #38bdf8;"><input type="radio" name="loglvl_loc" value="1" onclick="setLocalFilter(1)" id="lvl-loc-1"> L1</label>
+                        <label style="cursor: pointer; color: #eab308;"><input type="radio" name="loglvl_loc" value="2" onclick="setLocalFilter(2)" id="lvl-loc-2"> L2</label>
+                        <label style="cursor: pointer; color: #a855f7;"><input type="radio" name="loglvl_loc" value="3" onclick="setLocalFilter(3)" id="lvl-loc-3" checked> L3</label>
+                    </div>
+                </summary>
+                <div id="web-log-console" style="margin-top: 8px; background: #090d16; font-family: monospace; font-size: 10px; color: #4ade80; max-height: 150px; overflow-y: auto; padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(56, 189, 248, 0.4); line-height: 1.45; white-space: pre-wrap; word-break: break-all;">
+[00:00:00] Initializing Local System Console...
+                </div>
+            </details>
+            <details open class="hist-toggle" id="details-logs-remote" style="margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 8px;">
+                <summary style="font-size: 11px; color: #c084fc; cursor: pointer; user-select: none; font-weight: bold; outline: none; display: flex; justify-content: space-between; align-items: center;">
+                    <span id="label-log-remote">▼ Remote Peer Terminal Console [ESP-NOW]</span>
+                    <div style="display: flex; gap: 8px; font-family: monospace; font-size: 10px; background: rgba(0,0,0,0.25); padding: 2px 6px; border-radius: 6px;" onclick="event.stopPropagation();">
+                        <span style="color: #94a3b8; font-size: 9.5px; margin-right: 2px;">Filter:</span>
+                        <label style="cursor: pointer; color: #38bdf8;"><input type="radio" name="loglvl_rem" value="1" onclick="setRemoteFilter(1)" id="lvl-rem-1"> L1</label>
+                        <label style="cursor: pointer; color: #eab308;"><input type="radio" name="loglvl_rem" value="2" onclick="setRemoteFilter(2)" id="lvl-rem-2"> L2</label>
+                        <label style="cursor: pointer; color: #a855f7;"><input type="radio" name="loglvl_rem" value="3" onclick="setRemoteFilter(3)" id="lvl-rem-3" checked> L3</label>
+                    </div>
+                </summary>
+                <div id="web-log-console-remote" style="margin-top: 8px; background: #0c0916; font-family: monospace; font-size: 10px; color: #c084fc; max-height: 150px; overflow-y: auto; padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(168, 85, 247, 0.5); line-height: 1.45; white-space: pre-wrap; word-break: break-all;">
+[00:00:00] Waiting for Remote Peer ESP-NOW Log Stream...
                 </div>
             </details>
         </div>
         <div class="footer" style="display: flex; justify-content: space-between; align-items: center; margin-top: 25px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.05);">
-            <span id="footer-text">IDRY26 Live Monitor v)rawhtml" +
-        String("1.") + String(localFirmwareVersion) +
-        R"rawhtml( - (bench: <span id="footer-bench" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> loops/s)</span>
+            <span id="footer-text">iDRY26 v1.)rawhtml" +
+        String(localFirmwareVersion) +
+        R"rawhtml( - (bench: <span id="footer-bench" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> loops/s | heap: <span id="footer-heap" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> KB | alloc: <span id="footer-alloc" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> KB)</span>
             <a href="/settings" style="color: #818cf8; text-decoration: none; display: inline-flex; align-items: center; gap: 5px; font-weight: 600; padding: 6px 12px; background: rgba(129, 140, 248, 0.1); border-radius: 8px; border: 1px solid rgba(129, 140, 248, 0.2); transition: all 0.2s;">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l-.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
                 Einstellungen
             </a>
         </div>
@@ -2371,7 +2612,7 @@ void handlePortalRoot() {
         let currentDryStrategy = 0;
         let currentHygroLimit = 70;
         let latestData = null;
-        const vpdAutoRhProfileJS = [68.0, 67.0, 66.0, 65.0, 64.5, 64.0, 63.5, 63.0, 62.6, 62.3, 62.0, 62.0, 62.0, 62.0];
+        const vpdAutoProfileJS = [0.70, 0.72, 0.74, 0.76, 0.78, 0.80, 0.81, 0.82, 0.83, 0.84, 0.85, 0.85, 0.85, 0.85];
 
         function setDryStrategy(mode, limit, day) {
             currentDryStrategy = mode;
@@ -2389,14 +2630,258 @@ void handlePortalRoot() {
 
         let currentVpdAutoActiveDay = 1;
 
-        function renderVpdAutoTimeline(activeDay) {
+        const vpdMatrixJS = [
+            [0.56, 0.58, 0.59, 0.61, 0.62, 0.64, 0.65, 0.66, 0.66, 0.67, 0.68, 0.68, 0.68, 0.68],
+            [0.59, 0.60, 0.62, 0.64, 0.66, 0.67, 0.68, 0.69, 0.70, 0.71, 0.71, 0.71, 0.71, 0.71],
+            [0.62, 0.63, 0.65, 0.67, 0.69, 0.70, 0.71, 0.72, 0.73, 0.74, 0.75, 0.75, 0.75, 0.75],
+            [0.64, 0.66, 0.68, 0.70, 0.72, 0.74, 0.75, 0.75, 0.76, 0.77, 0.78, 0.78, 0.78, 0.78],
+            [0.67, 0.69, 0.71, 0.73, 0.75, 0.77, 0.78, 0.79, 0.80, 0.81, 0.82, 0.82, 0.82, 0.82],
+            [0.70, 0.72, 0.74, 0.76, 0.78, 0.80, 0.81, 0.82, 0.83, 0.84, 0.85, 0.85, 0.85, 0.85],
+            [0.73, 0.75, 0.77, 0.79, 0.81, 0.83, 0.84, 0.85, 0.86, 0.87, 0.88, 0.88, 0.88, 0.88],
+            [0.76, 0.78, 0.80, 0.82, 0.84, 0.86, 0.87, 0.89, 0.90, 0.91, 0.92, 0.92, 0.92, 0.92],
+            [0.78, 0.81, 0.83, 0.85, 0.87, 0.90, 0.91, 0.92, 0.93, 0.94, 0.95, 0.95, 0.95, 0.95],
+            [0.81, 0.84, 0.86, 0.88, 0.90, 0.93, 0.94, 0.95, 0.96, 0.97, 0.99, 0.99, 0.99, 0.99],
+            [0.84, 0.86, 0.89, 0.91, 0.94, 0.96, 0.97, 0.98, 1.00, 1.01, 1.02, 1.02, 1.02, 1.02],
+            [0.87, 0.89, 0.92, 0.94, 0.97, 0.99, 1.00, 1.02, 1.03, 1.04, 1.05, 1.05, 1.05, 1.05],
+            [0.90, 0.92, 0.95, 0.97, 1.00, 1.02, 1.04, 1.05, 1.06, 1.07, 1.09, 1.09, 1.09, 1.09],
+            [0.92, 0.95, 0.98, 1.00, 1.03, 1.06, 1.07, 1.08, 1.10, 1.11, 1.12, 1.12, 1.12, 1.12],
+            [0.95, 0.98, 1.01, 1.03, 1.06, 1.09, 1.10, 1.12, 1.13, 1.14, 1.16, 1.16, 1.16, 1.16],
+            [0.98, 1.01, 1.04, 1.06, 1.10, 1.12, 1.13, 1.15, 1.16, 1.18, 1.19, 1.19, 1.19, 1.19],
+            [1.01, 1.04, 1.07, 1.10, 1.13, 1.16, 1.17, 1.19, 1.20, 1.21, 1.23, 1.23, 1.23, 1.23],
+            [1.02, 1.05, 1.08, 1.11, 1.14, 1.17, 1.18, 1.20, 1.21, 1.22, 1.24, 1.24, 1.24, 1.24],
+            [1.04, 1.07, 1.10, 1.13, 1.16, 1.19, 1.20, 1.22, 1.23, 1.25, 1.26, 1.26, 1.26, 1.26],
+            [1.06, 1.09, 1.12, 1.15, 1.18, 1.21, 1.22, 1.24, 1.25, 1.27, 1.28, 1.28, 1.28, 1.28],
+            [1.08, 1.11, 1.14, 1.17, 1.20, 1.23, 1.24, 1.26, 1.27, 1.29, 1.30, 1.30, 1.30, 1.30]
+        ];
+
+        function getVpdColor(val) {
+            let t = Math.max(0, Math.min(1, (val - 0.50) / 0.85));
+            if (t < 0.33) {
+                let r = Math.round(56 + (34 - 56) * (t / 0.33));
+                let g = Math.round(189 + (197 - 189) * (t / 0.33));
+                let b = Math.round(248 + (94 - 248) * (t / 0.33));
+                return `rgb(${r},${g},${b})`;
+            } else if (t < 0.67) {
+                let factor = (t - 0.33) / 0.34;
+                let r = Math.round(34 + (250 - 34) * factor);
+                let g = Math.round(197 + (204 - 197) * factor);
+                let b = Math.round(94 + (21 - 94) * factor);
+                return `rgb(${r},${g},${b})`;
+            } else {
+                let factor = (t - 0.67) / 0.33;
+                let r = Math.round(250 + (239 - 250) * factor);
+                let g = Math.round(204 + (68 - 204) * factor);
+                let b = Math.round(21 + (68 - 21) * factor);
+                return `rgb(${r},${g},${b})`;
+            }
+        }
+
+        function renderVpdHeatmapCanvas(activeDay, indoorTemp) {
+            const canvas = document.getElementById('vpd-heatmap-canvas');
+            if (!canvas) return;
+            const container = canvas.parentElement;
+            const boxW = container.offsetWidth || 280;
+            const boxH = 100;
+            const dpr = window.devicePixelRatio || 1;
+            const w = canvas.width = boxW * dpr;
+            const h = canvas.height = boxH * dpr;
+            const ctx = canvas.getContext('2d');
+
+            ctx.clearRect(0, 0, w, h);
+
+            const marginL = 20 * dpr;
+            const marginR = 24 * dpr;
+            const marginB = 12 * dpr;
+            const marginT = 14 * dpr;
+
+            const gridW = w - marginL - marginR;
+            const gridH = h - marginT - marginB;
+
+            const cellW = gridW / 14;
+            const cellH = gridH / 21;
+
+            for (let r = 0; r < 21; r++) {
+                let tIdx = 20 - r;
+                for (let c = 0; c < 14; c++) {
+                    let val = vpdMatrixJS[tIdx][c];
+                    ctx.fillStyle = getVpdColor(val);
+                    ctx.fillRect(marginL + c * cellW, marginT + r * cellH, cellW - 0.4 * dpr, cellH - 0.4 * dpr);
+                }
+            }
+
+            ctx.fillStyle = '#64748b';
+            ctx.font = `${7 * dpr}px monospace`;
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('35°', marginL - 2 * dpr, marginT + 0.5 * cellH);
+            ctx.fillText('25°', marginL - 2 * dpr, marginT + 10.5 * cellH);
+            ctx.fillText('15°', marginL - 2 * dpr, marginT + 20.5 * cellH);
+
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'top';
+            ctx.fillText('1', marginL + 0.5 * cellW, h - marginB + 1 * dpr);
+            ctx.fillText('7', marginL + 6.5 * cellW, h - marginB + 1 * dpr);
+            ctx.fillText('14', marginL + 13.5 * cellW, h - marginB + 1 * dpr);
+
+            const legX = w - marginR + 4 * dpr;
+            const legW = 5 * dpr;
+            const grad = ctx.createLinearGradient(0, marginT + gridH, 0, marginT);
+            grad.addColorStop(0, '#38bdf8');
+            grad.addColorStop(0.35, '#22c55e');
+            grad.addColorStop(0.65, '#facc15');
+            grad.addColorStop(1.0, '#ef4444');
+            ctx.fillStyle = grad;
+            ctx.fillRect(legX, marginT, legW, gridH);
+
+            ctx.fillStyle = '#64748b';
+            ctx.font = `${6.5 * dpr}px monospace`;
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'top';
+            ctx.fillText('1.4', legX + legW + 2 * dpr, marginT);
+            ctx.textBaseline = 'bottom';
+            ctx.fillText('0.5', legX + legW + 2 * dpr, marginT + gridH);
+
+            let col = activeDay - 1;
+            let tempRounded = Math.round(indoorTemp || 20);
+            let tIdx = tempRounded - 15;
+            if (tIdx < 0) tIdx = 0;
+            if (tIdx > 20) tIdx = 20;
+            let row = 20 - tIdx;
+
+            let cx = marginL + col * cellW + cellW / 2;
+            let cy = marginT + row * cellH + cellH / 2;
+            let activeVpd = vpdMatrixJS[tIdx][col];
+
+            // 3D Neon Laser Crosshair with dark high-contrast outline
+            ctx.setLineDash([3 * dpr, 3 * dpr]);
+            
+            // 1. Dark Outer Shadow/Outline Line (3.5px) for 100% contrast on any cell color
+            ctx.strokeStyle = '#0f172a';
+            ctx.lineWidth = 3.5 * dpr;
+
+            ctx.beginPath();
+            ctx.moveTo(cx, marginT);
+            ctx.lineTo(cx, marginT + gridH);
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.moveTo(marginL, cy);
+            ctx.lineTo(marginL + gridW, cy);
+            ctx.stroke();
+
+            // 2. Bright Inner Neon Laser Line (1.5px)
+            ctx.strokeStyle = isInspectingHeatmap ? '#facc15' : '#38bdf8';
+            ctx.lineWidth = 1.5 * dpr;
+
+            ctx.beginPath();
+            ctx.moveTo(cx, marginT);
+            ctx.lineTo(cx, marginT + gridH);
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.moveTo(marginL, cy);
+            ctx.lineTo(marginL + gridW, cy);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // 3. Laser Center Dot with outer ring
+            ctx.beginPath();
+            ctx.arc(cx, cy, 4 * dpr, 0, Math.PI * 2);
+            ctx.fillStyle = '#0f172a';
+            ctx.fill();
+
+            ctx.beginPath();
+            ctx.arc(cx, cy, 2.5 * dpr, 0, Math.PI * 2);
+            ctx.fillStyle = '#ffffff';
+            ctx.fill();
+            ctx.strokeStyle = isInspectingHeatmap ? '#facc15' : '#38bdf8';
+            ctx.lineWidth = 1.5 * dpr;
+            ctx.stroke();
+
+            // 4. Elevated Floating Badge Tooltip (Shifted 22px higher above intersection)
+            let inspectTag = isInspectingHeatmap ? "[INSPEKTION] " : "";
+            let badgeText = `${inspectTag}Tag ${activeDay} @ ${tempRounded}°C: ${activeVpd.toFixed(2)} kPa`;
+            ctx.font = `bold ${7.5 * dpr}px sans-serif`;
+            let textW = ctx.measureText(badgeText).width;
+            let padX = 5 * dpr, padY = 2 * dpr;
+            let bx = cx - textW / 2 - padX;
+            let by = cy - 22 * dpr; // Elevated 22px above cy so crosshair line is visible!
+            if (bx < marginL) bx = marginL;
+            if (bx + textW + padX * 2 > w - marginR) bx = w - marginR - textW - padX * 2;
+            if (by < 1 * dpr) by = cy + 6 * dpr;
+
+            ctx.fillStyle = 'rgba(15, 23, 42, 0.95)';
+            ctx.strokeStyle = isInspectingHeatmap ? '#facc15' : '#38bdf8';
+            ctx.lineWidth = 1 * dpr;
+            ctx.beginPath();
+            ctx.roundRect(bx, by, textW + padX * 2, 10 * dpr + padY * 2, 3 * dpr);
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.fillStyle = isInspectingHeatmap ? '#facc15' : '#38bdf8';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(badgeText, bx + padX, by + (10 * dpr + padY * 2) / 2);
+        }
+
+        let isInspectingHeatmap = false;
+        let inspectDay = 1;
+        let inspectTemp = 20;
+
+        function handleHeatmapPointer(e) {
+            const canvas = document.getElementById('vpd-heatmap-canvas');
+            if (!canvas) return;
+            const rect = canvas.getBoundingClientRect();
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            const x = clientX - rect.left;
+            const y = clientY - rect.top;
+
+            const marginL = 20;
+            const marginR = 24;
+            const marginT = 14;
+            const marginB = 12;
+
+            const gridW = rect.width - marginL - marginR;
+            const gridH = rect.height - marginT - marginB;
+
+            const cellW = gridW / 14;
+            const cellH = gridH / 21;
+
+            let col = Math.floor((x - marginL) / cellW) + 1;
+            let row = Math.floor((y - marginT) / cellH);
+
+            if (col >= 1 && col <= 14 && row >= 0 && row < 21) {
+                isInspectingHeatmap = true;
+                inspectDay = col;
+                inspectTemp = 35 - row;
+                renderVpdAutoTimeline(inspectDay, inspectTemp);
+            }
+        }
+
+        function stopHeatmapInspection() {
+            if (isInspectingHeatmap) {
+                isInspectingHeatmap = false;
+                let tempR = (latestData && latestData.indoor_temp_rounded) ? latestData.indoor_temp_rounded : 20;
+                renderVpdAutoTimeline(currentVpdAutoActiveDay, tempR);
+            }
+        }
+
+        function renderVpdAutoTimeline(activeDay, activeTemp) {
             currentVpdAutoActiveDay = activeDay;
+            let tempR = (activeTemp !== undefined) ? activeTemp : ((latestData && latestData.indoor_temp_rounded) ? latestData.indoor_temp_rounded : 20);
+            let tIdx = Math.round(tempR) - 15;
+            if (tIdx < 0) tIdx = 0;
+            if (tIdx > 20) tIdx = 20;
+
+            renderVpdHeatmapCanvas(activeDay, tempR);
+
             let container = document.getElementById('vpd-auto-timeline');
             if (!container) return;
             let html = "";
             for (let day = 1; day <= 14; day++) {
-                let rhVal = vpdAutoRhProfileJS[day - 1];
-                let heightPct = Math.round(((rhVal - 60.0) / 10.0) * 100);
+                let vpdVal = vpdMatrixJS[tIdx][day - 1];
+                let heightPct = Math.round(((vpdVal - 0.50) / 0.90) * 100);
                 if (heightPct < 25) heightPct = 25;
                 if (heightPct > 100) heightPct = 100;
 
@@ -2417,8 +2902,8 @@ void handlePortalRoot() {
 
                 let activeClass = isCurrent ? "class='vpd-candle-active'" : "";
 
-                html += `<div onclick="openVpdDayModal(${day}, ${rhVal.toFixed(1)})" style="flex:1; height:100%; display:flex; align-items:flex-end; cursor:pointer; user-select:none; padding: 0 1px;">
-                    <div ${activeClass} style="width:100%; height:${heightPct}%; background:${barBg}; border-radius:3px; border:${borderStyle}; transition:all 0.3s;" title="Tag ${day}: ${rhVal.toFixed(1)}% RH (dyn. VPD)"></div>
+                html += `<div onclick="openVpdDayModal(${day}, ${vpdVal.toFixed(2)})" style="flex:1; height:100%; display:flex; align-items:flex-end; cursor:pointer; user-select:none; padding: 0 1px;">
+                    <div ${activeClass} style="width:100%; height:${heightPct}%; background:${barBg}; border-radius:3px; border:${borderStyle}; transition:all 0.3s;" title="Tag ${day} @ ${Math.round(tempR)}°C: ${vpdVal.toFixed(2)} kPa"></div>
                 </div>`;
             }
             container.innerHTML = html;
@@ -2432,8 +2917,8 @@ void handlePortalRoot() {
         function onVpdDaySelectChange(newDayVal) {
             let day = parseInt(newDayVal);
             if (isNaN(day) || day < 1 || day > 14) return;
-            let rhVal = vpdAutoRhProfileJS[day - 1];
-            openVpdDayModal(day, rhVal.toFixed(1));
+            let vpdVal = vpdAutoProfileJS[day - 1];
+            openVpdDayModal(day, vpdVal.toFixed(2));
         }
 
         let pendingTargetDay = 1;
@@ -2441,9 +2926,9 @@ void handlePortalRoot() {
         let holdStartTime = 0;
         let holdInterval = null;
 
-        function openVpdDayModal(day, rhVal) {
+        function openVpdDayModal(day, vpdVal) {
             pendingTargetDay = day;
-            document.getElementById('vpd-day-modal-title').innerText = "Tag " + day + " (Ziel: " + rhVal + "% RH) aktivieren?";
+            document.getElementById('vpd-day-modal-title').innerText = "Tag " + day + " (Ziel: " + vpdVal + " kPa) aktivieren?";
             document.getElementById('vpd-day-modal-desc').innerHTML = "Möchtest du den Trocknungs-Fortschritt manuell auf <b>Tag " + day + "</b> umstellen?";
             resetHoldButton();
             let modal = document.getElementById('vpd-day-modal');
@@ -2509,6 +2994,52 @@ void handlePortalRoot() {
             btn.addEventListener('touchstart', startHold, {passive: false});
             btn.addEventListener('touchend', endHold);
             btn.addEventListener('touchcancel', endHold);
+        }
+
+        let webLogHistoryLocal = [];
+        let webLogHistoryRemote = [];
+        let localFilterLvl = 3;
+        let remoteFilterLvl = 3;
+
+        function setLocalFilter(lvl) {
+            localFilterLvl = lvl;
+            updateLogHistory('web-log-console', [], webLogHistoryLocal, "[00:00:00] Initializing Local System Console...", localFilterLvl);
+        }
+
+        function setRemoteFilter(lvl) {
+            remoteFilterLvl = lvl;
+            updateLogHistory('web-log-console-remote', [], webLogHistoryRemote, "[00:00:00] Waiting for Remote ESP-NOW Log Stream...", remoteFilterLvl);
+        }
+
+        function updateLogHistory(elementId, incomingLogs, historyArr, defaultMsg, filterLvl) {
+            let el = document.getElementById(elementId);
+            if (!el) return;
+
+            if (incomingLogs && Array.isArray(incomingLogs)) {
+                for (let i = 0; i < incomingLogs.length; i++) {
+                    let line = incomingLogs[i];
+                    if (line && !historyArr.includes(line)) {
+                        historyArr.push(line);
+                    }
+                }
+            }
+
+            if (historyArr.length > 300) {
+                historyArr.splice(0, historyArr.length - 300);
+            }
+
+            let filteredLines = historyArr.filter(line => {
+                if (filterLvl >= 3) return true;
+                if (line.includes('[DBG ]')) return false;
+                return true;
+            });
+
+            let textToShow = filteredLines.length > 0 ? filteredLines.join('\n') : (defaultMsg || "");
+            let isAtBottom = (el.scrollHeight - el.clientHeight - el.scrollTop) < 40;
+            el.innerText = textToShow;
+            if (isAtBottom) {
+                el.scrollTop = el.scrollHeight;
+            }
         }
 
         function updateData() {
@@ -2700,7 +3231,9 @@ void handlePortalRoot() {
                             if (btn6060) { btn6060.style.background = '#1e293b'; btn6060.style.color = '#94a3b8'; }
                             if (hlBox) hlBox.style.display = 'block';
                             if (vpdAutoBox) vpdAutoBox.style.display = 'block';
-                            if (potiALabel) potiALabel.innerText = 'AUTO VPD (Tag ' + vpdAutoDay + '):';
+                            
+                            let tempR = data.indoor_temp_rounded || 20;
+                            if (potiALabel) potiALabel.innerText = 'AUTO VPD (Tag ' + vpdAutoDay + ' @ ' + tempR + '°C):';
                             if (hygroLim === 80) { if (hl80) hl80.checked = true; }
                             else if (hygroLim === 75) { if (hl75) hl75.checked = true; }
                             else { if (hl70) hl70.checked = true; }
@@ -2855,6 +3388,73 @@ void handlePortalRoot() {
                     if (benchEl) {
                         benchEl.innerText = data.loops_per_sec || 0;
                     }
+                    const heapEl = document.getElementById('footer-heap');
+                    if (heapEl) {
+                        heapEl.innerText = data.free_heap ? (data.free_heap / 1024).toFixed(1) : '--';
+                    }
+                    const allocEl = document.getElementById('footer-alloc');
+                    if (allocEl) {
+                        allocEl.innerText = data.max_alloc_heap ? (data.max_alloc_heap / 1024).toFixed(1) : '--';
+                    }
+
+                    let isSlave = (data.espnow_role === 2);
+                    let isMaster = (data.espnow_role === 1);
+                    let roleStr = isMaster ? "MASTER" : (isSlave ? "SLAVE" : "STANDALONE");
+                    let remoteRoleStr = isMaster ? "SLAVE" : "MASTER";
+
+                    // MASTER DATA = BLUE BOX (#38bdf8, #090d16)
+                    // SLAVE DATA  = RED BOX (#f87171, #160909)
+                    let localIsBlue = isMaster || !isSlave;
+                    let localColor  = localIsBlue ? "#38bdf8" : "#f87171";
+                    let localBorder = localIsBlue ? "1px solid rgba(56, 189, 248, 0.5)" : "1px solid rgba(248, 113, 113, 0.5)";
+                    let localBg     = localIsBlue ? "#090d16" : "#160909";
+                    let localText   = localIsBlue ? "#38bdf8" : "#fca5a5";
+
+                    let lblLocal = document.getElementById('label-log-local');
+                    let subLocal = document.querySelector('#details-logs-local summary span:last-child');
+                    if (lblLocal) {
+                        lblLocal.innerText = "▼ Local Terminal Console (" + roleStr + ")";
+                        if (lblLocal.parentElement) lblLocal.parentElement.style.color = localColor;
+                    }
+                    if (subLocal) subLocal.style.color = localColor;
+
+                    const logEl = document.getElementById('web-log-console');
+                    if (logEl) {
+                        logEl.style.border = localBorder;
+                        logEl.style.background = localBg;
+                        logEl.style.color = localText;
+                    }
+
+                    // Remote Console is opposite of Local
+                    let remoteIsBlue = isSlave; // On Slave UI, Remote is Master -> BLUE BOX! On Master UI, Remote is Slave -> RED BOX!
+                    let remoteColor  = remoteIsBlue ? "#38bdf8" : "#f87171";
+                    let remoteBorder = remoteIsBlue ? "1px solid rgba(56, 189, 248, 0.5)" : "1px solid rgba(248, 113, 113, 0.5)";
+                    let remoteBg     = remoteIsBlue ? "#090d16" : "#160909";
+                    let remoteText   = remoteIsBlue ? "#38bdf8" : "#fca5a5";
+
+                    let lblRemote = document.getElementById('label-log-remote');
+                    let subRemote = document.querySelector('#details-logs-remote summary span:last-child');
+                    let detRemote = document.getElementById('details-logs-remote');
+                    if (data.espnow_role > 0) {
+                        if (detRemote) detRemote.style.display = 'block';
+                        if (lblRemote) {
+                            lblRemote.innerText = "▼ Remote " + remoteRoleStr + " Terminal Console [ESP-NOW]";
+                            if (lblRemote.parentElement) lblRemote.parentElement.style.color = remoteColor;
+                        }
+                        if (subRemote) subRemote.style.color = remoteColor;
+                    } else {
+                        if (detRemote) detRemote.style.display = 'none';
+                    }
+
+                    const logElRemote = document.getElementById('web-log-console-remote');
+                    if (logElRemote) {
+                        logElRemote.style.border = remoteBorder;
+                        logElRemote.style.background = remoteBg;
+                        logElRemote.style.color = remoteText;
+                    }
+
+                    updateLogHistory('web-log-console', data.sys_logs, webLogHistoryLocal, "[00:00:00] Initializing Local System Console...", localFilterLvl);
+                    updateLogHistory('web-log-console-remote', data.remote_sys_logs, webLogHistoryRemote, "[00:00:00] Waiting for Remote " + remoteRoleStr + " ESP-NOW Log Stream...", remoteFilterLvl);
                 })
                 .catch(err => {
                     // Connection lost to ESP32
@@ -3000,6 +3600,16 @@ void handlePortalRoot() {
             ctx.fillText(labelMid, 2 * dpr, h / 2);
             ctx.textBaseline = 'bottom';
             ctx.fillText(labelMin, 2 * dpr, h - 6 * dpr);
+
+            let strat = (latestData && latestData.dry_strategy !== undefined) ? latestData.dry_strategy : currentDryStrategy;
+            if (type === 'vpd' && strat === 2 && latestData && latestData.indoor_temp_rounded) {
+                ctx.fillStyle = '#facc15';
+                ctx.font = `bold ${9 * dpr}px sans-serif`;
+                ctx.textAlign = 'right';
+                ctx.textBaseline = 'top';
+                ctx.fillText(`${latestData.indoor_temp_rounded}°C Profil`, w - 4 * dpr, 2 * dpr);
+                ctx.textAlign = 'left'; // reset
+            }
 
             const marginL = 28 * dpr;
             const chartW = w - marginL;
@@ -4713,6 +5323,7 @@ void handleEspNowPairApi() {
 void handleBuzzerTestApi() {
   String type = server.arg("type");
   if (type == "local") {
+    addAppLogEx(1, "[BUZZER] Triggered Local Buzzer Test Chime!");
     server.send(200, "application/json", "{\"status\":\"ok\"}");
     playWinnerMelody();
   } else if (type == "remote") {
@@ -4723,6 +5334,7 @@ void handleBuzzerTestApi() {
       return;
     }
 
+    addAppLogEx(1, "[BUZZER] Triggered Remote Peer Buzzer Test over ESP-NOW!");
     EspNowMessage msg;
     msg.pv = localProtocolVersion;
     msg.type = 2; // Command/Data
@@ -5763,19 +6375,18 @@ static bool isServerStarted = false;
 // Binding
 void WiFiEvent(WiFiEvent_t event) {
   if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
-    Serial.printf("[WLAN] Event: Got IP %s. Binding WebServer...\n",
-                  WiFi.localIP().toString().c_str());
+    addAppLog("[WLAN] Connected. IP: %s (Ch: %d)", WiFi.localIP().toString().c_str(), WiFi.channel());
     server.begin();
     isServerStarted = true;
   } else if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
-    Serial.println("[WLAN] Event: WiFi connection lost.");
+    addAppLog("[WLAN] Connection lost. Reconnecting...");
   }
 }
 
 void setup() {
   Serial.begin(115200);
   delay(2000);
-  Serial.println("\n=== Multi-Display Bootstrap Boot ===");
+  addAppLog("=== iDRY26 v1.99 System Boot. FreeHeap: %u B, MaxAlloc: %u B ===", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
   // Initialize Buzzer
   pinMode(BUZZER_PIN, OUTPUT);
@@ -5888,6 +6499,8 @@ void setup() {
     server.on("/api/espnow/pair", handleEspNowPairApi);
     server.on("/api/espnow/buzzer_test", handleBuzzerTestApi);
     server.on("/api/settings/dry_strategy", handleDryStrategyApi);
+    server.on("/api/loglevel", HTTP_POST, handleSetLogLevel);
+    server.on("/api/loglevel", HTTP_GET, handleSetLogLevel);
     server.on("/firmware", handleFirmwarePage);
     server.on("/firmware/autoupdate", handleAutoUpdate);
     server.on("/api/firmware/autoupdate_start", handleAutoUpdateApi);
@@ -6356,6 +6969,16 @@ void loop() {
       publishMqttState();
     }
 
+    // 30-Second Periodic Diagnostics Log for Web Terminal & T-Pipe Logger
+    static unsigned long lastLogHeartbeatTime = 0;
+    if (millis() - lastLogHeartbeatTime >= 30000) {
+      lastLogHeartbeatTime = millis();
+      float freeKb = ESP.getFreeHeap() / 1024.0f;
+      float allocKb = ESP.getMaxAllocHeap() / 1024.0f;
+      addAppLog("[Status] Bench: %u l/s | Heap: %.1f KB | Alloc: %.1f KB | RSSI: %d dBm",
+                loopsPerSecond, freeKb, allocKb, WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0);
+    }
+
     if (isHeadless) {
       // Headless Mode: skip drawing to display to conserve power/speed
     } else if (isTFTMode) {
@@ -6514,9 +7137,7 @@ void loop() {
     }
 
     if (!isnan(hum_inside) && hum_inside < potiAVal) {
-      Serial.printf("[Alarm] Inside humidity (%.1f%%) is below target "
-                    "(%.1f%%). Playing warning chime.\n",
-                    hum_inside, potiAVal);
+      addAppLogEx(1, "[ALARM] Low Humidity Warning Chime: Inside (%.1f%%) < Target (%.1f%%)", hum_inside, potiAVal);
       // Play 3 pleasant descending tones, 500ms each, no pause
       tone(BUZZER_PIN, 523, 500); // C5 (523 Hz)
       delay(500);
@@ -6546,8 +7167,7 @@ void loop() {
       // Only play the bypass alarm if the inside is still too wet (above/equal
       // to target humidity)
       if (isnan(hum_inside) || hum_inside >= potiAVal) {
-        Serial.println("[Alarm] Thermodynamic bypass is active (Outside "
-                       "humidity too high). Playing warning chime.");
+        addAppLogEx(1, "[ALARM] Thermodynamic Bypass Warning Chime: Outside humidity too high!");
         // Play 3 very short tones of 500 Hz with a short pause, 1s long pause,
         // and then repeat
         for (int repeat = 0; repeat < 2; repeat++) {

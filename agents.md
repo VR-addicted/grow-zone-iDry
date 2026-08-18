@@ -78,7 +78,7 @@ Do not change SPI, I2C, ADC, or actuator pin assignments:
 
 ## VPD Strategy Engine & Hygro-Limit Mold Protection
 * **3-Mode Strategy Selection:** Configurable via Web UI or HTTP POST `/api/settings/dry_strategy?mode=X&limit=Y` (`sysConfig.dry_strategy`: 0 = 60/60 Mode, 1 = VPD Mode, 2 = VPD AUTO Mode; `sysConfig.hygro_limit`: 70, 75, or 80%).
-* **VPD AUTO 14-Day Progression:** 14-day automated Curing schedule (Day 1: 0.70 kPa ~68% RH ... Day 11–14+: 0.85 kPa ~62% RH Goldstandard Curing Landing Zone). Days > 14 remain clamped at Day 14 target (0.85 kPa / 62% RH). Includes interactive 14-option dropdown selector and 42px candle strip with continuous pulsing glow (`@keyframes vpd-candle-pulse`) on active day.
+* **VPD AUTO 14-Day Progression & 21x14 Temp Matrix:** 14-day automated Curing schedule backed by a 21x14 scientific temperature matrix ($15\text{ to }35^\circ\text{C}$). Dynamically looks up target VPD for the active room temperature and lands on **0.85 kPa (~62% RH Goldstandard Curing Landing Zone)** on Days 11–14+. Features an interactive **2D Heatmap Canvas Widget** with a cyan/yellow laser crosshair, glowing white dot, floating badge tooltip, and right-hand color scale legend ($0.50 \text{ to } 1.40\text{ kPa}$).
 * **Yellow Dotted Baseline Line (`#facc15`):** Both VPD charts (`VPD Innen` and `VPD Außen`) and the 24h Zoom Modal draw a bright yellow dashed target line tracking the active day's target VPD in `VPD AUTO` mode or manual target VPD in `VPD` mode. Hidden in `60/60` mode.
 * **Poti A Re-Mapping (VPD Mode):** 0% to 100% knob position maps to **0.60 kPa to 1.40 kPa**, with **1.00 kPa at 50% midpoint knob position**. (In `VPD AUTO` mode, Poti A is overridden by current day target VPD).
 * **Hygro-Limit Mold Protection Cap:** Target RH derived from VPD is clamped: $RH_{\text{effective}} = \min(RH_{\text{calculated}}, \text{HygroLimit})$.
@@ -110,13 +110,20 @@ Do not change SPI, I2C, ADC, or actuator pin assignments:
 
 ---
 
-## Home Assistant MQTT Auto-Discovery & PubSubClient Buffer
-* **1-Click Auto-Discovery:** Automatically publishes discovery payloads for all entities, including `dry_strategy` (0 = 60/60, 1 = VPD, 2 = VPD AU) and `vpd_auto_day` (1..14 in VPD AUTO mode, -1 in other modes).
-* **2048-Byte Buffer:** `mqttClient.setBufferSize(2048)` is enforced to prevent large JSON payloads from being dropped.
-
----
-
-## OTA Firmware Updates, Live Terminal & 16MB Partitioning
-* **Partition Table (`partitions.csv`):** 16MB dual OTA layout (`app0` 6.5MB, `app1` 6.5MB, `spiffs`/`littlefs` 2.87MB).
-* **1-Click GitHub Online OTA:** Checks `version.txt` on GitHub. Live progress terminal log UI shows step-by-step connection, header verification, OTA flash percentage, and reboot notice.
-* **ESP32 Header Validation (Magic Byte `0xE9`):** Verifies byte 0 for ESP32 magic byte `0xE9` and minimum file size (>100KB).
+## Live ESP-NOW RF Log Streaming, 3-Level Filtering & 300-Line Browser Buffer Rules
+* **Protocol Versioning (V4):** `localProtocolVersion` is updated to **V4**. Log payload struct `EspNowLogMessage` (type 3, 180-byte string payload) streams all `addAppLog(...)` calls from Master to Slave over ESP-NOW.
+* **T-Pipe Logging Architecture (`addAppLogEx(level, format, ...)`):**
+  - **Level 1 (`STAT` / `ALARM`):** Essential telemetry heartbeats, buzzer test chimes, low-humidity alarms, and thermodynamic bypass alerts. **Always displayed!**
+  - **Level 2 (`WARN`):** Warning chimes, sensor reset events, link loss events.
+  - **Level 3 (`DBG `):** Rich, talkative debug output (BME280/SHT3x/TSL2561 readings, VPD AUTO matrix calculations, Servo ramping steps, ESP-NOW pings, MQTT publishes).
+* **Independent Client-Side Per-Console Filters:**
+  - `Local Terminal Console`: Headers contain independent `( ) L1  ( ) L2  (•) L3` filter radios.
+  - `Remote Peer Terminal Console [ESP-NOW]`: Headers contain independent `( ) L1  ( ) L2  (•) L3` filter radios.
+  - Toggling filters executes client-side filtering over the 300-line browser RAM log buffer (`webLogHistoryLocal` and `webLogHistoryRemote`) instantly without losing cached lines or re-fetching.
+* **Role-Based Dynamic Console Styling (Diagonal Symmetry):**
+  - **Master Terminal Box:** Header `#38bdf8`, Border `1px solid rgba(56, 189, 248, 0.5)`, Background `#090d16`, Monospace Text `#38bdf8`.
+  - **Slave Terminal Box:** Header `#f87171`, Border `1px solid rgba(248, 113, 113, 0.5)`, Background `#160909`, Monospace Text `#fca5a5`.
+  - Master Screen: Local = Blue Box, Remote (Slave) = Red Box.
+  - Slave Screen: Local = Red Box, Remote (Master) = Blue Box.
+* **Automatic VPD AUTO Flash Persistence on Midnight Rollover:**
+  - `getVpdAutoCurrentDay()` detects `daysPassed > 0` (00:00 midnight sync or 24h uptime boundary), updates `sysConfig.vpd_auto_day`, resets start timestamp, and invokes `saveConfiguration()` to LittleFS Flash immediately. Ensures day progression survives reboots and firmware updates.
