@@ -1,10 +1,10 @@
-# Implementation Plan - Advanced Log Engine, RF Streaming & Telemetry (v100 - v118)
+# Implementation Plan - Advanced Log Engine, RF Streaming & Telemetry (v100 - v119)
 
-This document presents the completed technical implementation plan for the **Dual-Console Live Log Engine**, **ESP-NOW RF T-Pipe Streaming**, **3-Level Filter System**, **1000-Line Browser Memory Buffer**, **1-Click Floppy Disk TXT Export**, **Automatic VPD AUTO Flash Persistence**, **HTTP Socket Leak Elimination**, **Remote Linked Device Reboot Notification Modal**, and **Instant GitHub Update Detection via CDN Cache Bypassing**.
+This document presents the completed technical implementation plan for the **Dual-Console Live Log Engine**, **ESP-NOW RF T-Pipe Streaming**, **3-Level Filter System**, **1000-Line Browser Memory Buffer**, **1-Click Floppy Disk TXT Export**, **Automatic VPD AUTO Flash Persistence**, **HTTP Socket Leak Elimination**, **Remote Linked Device Reboot Notification Modal**, **CDN Cache Bypassing**, and **Home Assistant MQTT Firmware Update Auto-Discovery**.
 
 ---
 
-## Completed Milestones (Builds v100 - v118)
+## Completed Milestones (Builds v100 - v119)
 
 ### 1. ESP-NOW RF T-Pipe Log Streaming (Builds v100 - v101)
 - Implemented `EspNowLogMessage` (type 3, 180-byte payload) for live RF log transmission from Master to Slave.
@@ -46,17 +46,20 @@ This document presents the completed technical implementation plan for the **Dua
 ### 10. Remote Linked Device Reboot & Dismissible Notification Modal (v114 - v116)
 - Added `Reboot linked Device` button in Settings UI with an SVG Link Established icon (`🔗`), visible only when an ESP-NOW peer MAC is active.
 - Shortened triggering device's response to an instant 1-second redirect back to `/settings` without any blocking splash screen.
-- Added a clean, dismissible modal dialog (`#remote-reboot-modal`) on the receiving device's Web UI:
-  `⚡ Remote Reboot ausgelöst! Dieses Gerät wurde aus der Ferne von deinem gekoppelten Partner-Gerät per ESP-NOW neugestartet.`
+- Added a clean, dismissible modal dialog (`#remote-reboot-modal`) on the receiving device's Web UI.
 
-### 11. Instant GitHub Update Detection via CDN Cache Bypassing & 10s Boot Schedule (v117 - v118)
+### 11. Instant GitHub CDN Cache Bypassing & Conservative 60-Min Polling (v117 - v119)
 - Appended `?nocache=` + `String(millis())` to `raw.githubusercontent.com` fetch requests, bypassing Fastly/GitHub 5-minute CDN caching.
-- Enforced a 10-second post-connection buffer (`connectedSince + 10000ms`) for the initial update check after boot, followed by regular 10-minute checks or instant checks upon entering `/firmware`.
+- Adjusted automatic background update check schedule to **60 minutes** (3,600,000 ms = 1 Hour) post-boot, while retaining instant live check when opening `/firmware`.
+
+### 12. Home Assistant MQTT Firmware Update Auto-Discovery (v119)
+- Registered HA Auto-Discovery entities for `update_available` (binary update sensor) and `fw_version` (sensor) in `registerHomeAssistantDevices()`.
+- Telemetry payload publishes `update_available` (bool), `fw_version` (string), and `online_version` (int) continuously via MQTT.
 
 ---
 
 ## Verification & Build Status
 
-- **Firmware Version:** `v118`
+- **Firmware Version:** `v119`
 - **PlatformIO Build:** `SUCCESS` (Code 0)
-- **Synchronized Bundle Files:** `firmware.bin` (v118), `bootloader.bin`, `partitions.bin`, `version.txt` (v118) in `FIRMWARE/`.
+- **Synchronized Bundle Files:** `firmware.bin` (v119), `bootloader.bin`, `partitions.bin`, `version.txt` (v119) in `FIRMWARE/`.

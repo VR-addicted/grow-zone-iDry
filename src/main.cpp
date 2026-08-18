@@ -5577,7 +5577,7 @@ void checkGithubUpdateAsync(bool force) {
     return;
   }
   if (force || lastGithubCheckTime == 0 ||
-      millis() - lastGithubCheckTime >= 600000UL) {
+      millis() - lastGithubCheckTime >= 3600000UL) { // Conservative 60 minutes interval (1 Hour)
     int ver = fetchGithubFirmwareVersion();
     if (ver > 0) {
       lastGithubCheckTime = millis();
@@ -5588,8 +5588,8 @@ void checkGithubUpdateAsync(bool force) {
         addAppLogEx(1, "[OTA] GitHub Check: Firmware is up to date (Local v1.%d == Online v1.%d)", localFirmwareVersion, cachedOnlineVersion);
       }
     } else {
-      // If network check failed, retry in 30 seconds instead of locking out for 10 minutes
-      lastGithubCheckTime = millis() - 570000UL;
+      // If network check failed, retry in 5 minutes instead of locking out for 60 minutes
+      lastGithubCheckTime = millis() - 3300000UL;
     }
   }
 }
@@ -6373,6 +6373,8 @@ void registerHomeAssistantDevices() {
   sendHADiscoveryConfig("poti_c", "Poti C (Cal Offset)", "°", "mdi:knob", "");
   sendHADiscoveryConfig("dry_strategy", "Dry Strategy", "", "mdi:tune", "");
   sendHADiscoveryConfig("vpd_auto_day", "VPD Auto Tag", "Tag", "mdi:calendar-range", "");
+  sendHADiscoveryConfig("fw_version", "Firmware Version", "", "mdi:chip", "");
+  sendHADiscoveryConfig("update_available", "Firmware Update Verfügbar", "", "mdi:update", "");
   sendHADiscoveryConfig("linkquality", "Signalstärke", "lqi", "mdi:signal", "");
   sendHADiscoveryConfig("rssi", "WLAN Signalstärke", "dBm", "mdi:wifi",
                         "signal_strength");
@@ -6459,6 +6461,9 @@ void publishMqttState() {
           : sysConfig.dry_strategy;
   doc["dry_strategy"] = activeDryStrat;
   doc["vpd_auto_day"] = (activeDryStrat == 2) ? getVpdAutoCurrentDay() : -1;
+  doc["fw_version"] = "1." + String(localFirmwareVersion);
+  doc["update_available"] = (cachedOnlineVersion > localFirmwareVersion);
+  doc["online_version"] = cachedOnlineVersion;
 
   doc["linkquality"] =
       (WiFi.status() == WL_CONNECTED) ? map(WiFi.RSSI(), -100, -30, 0, 255) : 0;
