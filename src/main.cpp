@@ -644,7 +644,7 @@ void onEspNowDataRecv(const uint8_t *mac_addr, const uint8_t *data,
     tone(BUZZER_PIN, 1047, 300);
 
     initEspNow(); // Re-initialize peer
-    Serial.println("[Pairing] Slave paired successfully!");
+    addAppLogEx(1, "[Pairing] SUCCESS! Slave paired with Master MAC: %s, LMK: %s", sysConfig.espnow_peer_mac, sysConfig.espnow_lmk);
   }
 
   // 2. Pairing Response (Type 1) -> Received by Master
@@ -668,7 +668,7 @@ void onEspNowDataRecv(const uint8_t *mac_addr, const uint8_t *data,
     tone(BUZZER_PIN, 1047, 300);
 
     initEspNow(); // Re-initialize peer
-    Serial.println("[Pairing] Master paired successfully!");
+    addAppLogEx(1, "[Pairing] SUCCESS! Master paired with Slave MAC: %s, LMK: %s", macStr, proposedLmk);
   }
 
   // 3. Command/Data (Type 2)
@@ -2471,7 +2471,10 @@ void handlePortalRoot() {
             </div>
             <details open class="hist-toggle" id="details-logs-local" style="margin-top: 12px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 8px;">
                 <summary style="font-size: 11px; color: #38bdf8; cursor: pointer; user-select: none; font-weight: bold; outline: none; display: flex; justify-content: space-between; align-items: center;">
-                    <span id="label-log-local">▼ Local Terminal Console</span>
+                    <span style="display: inline-flex; align-items: center; gap: 8px;">
+                        <span id="label-log-local">▼ Local Terminal Console</span>
+                        <button type="button" title="Local Log-Historie als TXT herunterladen" onclick="event.stopPropagation(); downloadLogHistory(webLogHistoryLocal, 'Local_Console');" style="background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 4px; color: #38bdf8; cursor: pointer; padding: 1px 6px; font-size: 11px; display: inline-flex; align-items: center; gap: 3px; transition: all 0.2s;" onmouseover="this.style.background='rgba(56, 189, 248, 0.35)'" onmouseout="this.style.background='rgba(56, 189, 248, 0.15)'">💾</button>
+                    </span>
                     <div style="display: flex; gap: 8px; font-family: monospace; font-size: 10px; background: rgba(0,0,0,0.25); padding: 2px 6px; border-radius: 6px;" onclick="event.stopPropagation();">
                         <span style="color: #94a3b8; font-size: 9.5px; margin-right: 2px;">Filter:</span>
                         <label style="cursor: pointer; color: #38bdf8;"><input type="radio" name="loglvl_loc" value="1" onclick="setLocalFilter(1)" id="lvl-loc-1"> L1</label>
@@ -2485,7 +2488,10 @@ void handlePortalRoot() {
             </details>
             <details open class="hist-toggle" id="details-logs-remote" style="margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 8px;">
                 <summary style="font-size: 11px; color: #c084fc; cursor: pointer; user-select: none; font-weight: bold; outline: none; display: flex; justify-content: space-between; align-items: center;">
-                    <span id="label-log-remote">▼ Remote Peer Terminal Console [ESP-NOW]</span>
+                    <span style="display: inline-flex; align-items: center; gap: 8px;">
+                        <span id="label-log-remote">▼ Remote Peer Terminal Console [ESP-NOW]</span>
+                        <button type="button" title="Remote Log-Historie als TXT herunterladen" onclick="event.stopPropagation(); downloadLogHistory(webLogHistoryRemote, 'Remote_Console');" style="background: rgba(192, 132, 252, 0.15); border: 1px solid rgba(192, 132, 252, 0.35); border-radius: 4px; color: #c084fc; cursor: pointer; padding: 1px 6px; font-size: 11px; display: inline-flex; align-items: center; gap: 3px; transition: all 0.2s;" onmouseover="this.style.background='rgba(192, 132, 252, 0.35)'" onmouseout="this.style.background='rgba(192, 132, 252, 0.15)'">💾</button>
+                    </span>
                     <div style="display: flex; gap: 8px; font-family: monospace; font-size: 10px; background: rgba(0,0,0,0.25); padding: 2px 6px; border-radius: 6px;" onclick="event.stopPropagation();">
                         <span style="color: #94a3b8; font-size: 9.5px; margin-right: 2px;">Filter:</span>
                         <label style="cursor: pointer; color: #38bdf8;"><input type="radio" name="loglvl_rem" value="1" onclick="setRemoteFilter(1)" id="lvl-rem-1"> L1</label>
@@ -3014,6 +3020,26 @@ void handlePortalRoot() {
             updateLogHistory('web-log-console-remote', [], webLogHistoryRemote, "[00:00:00] Waiting for Remote ESP-NOW Log Stream...", remoteFilterLvl);
         }
 
+        function downloadLogHistory(historyArr, defaultFilename) {
+            if (!historyArr || historyArr.length === 0) {
+                alert("Keine Log-Einträge zum Exportieren vorhanden.");
+                return;
+            }
+            let devName = (latestData && latestData.device_name) ? latestData.device_name : "IDRY26";
+            let dateStr = new Date().toISOString().slice(0,10);
+            let finalName = devName + "_" + defaultFilename + "_" + dateStr + ".txt";
+            let content = historyArr.join('\r\n');
+            let blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+            let url = URL.createObjectURL(blob);
+            let a = document.createElement('a');
+            a.href = url;
+            a.download = finalName;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+        }
+
         function updateLogHistory(elementId, incomingLogs, historyArr, defaultMsg, filterLvl) {
             let el = document.getElementById(elementId);
             if (!el) return;
@@ -3027,8 +3053,8 @@ void handlePortalRoot() {
                 }
             }
 
-            if (historyArr.length > 300) {
-                historyArr.splice(0, historyArr.length - 300);
+            if (historyArr.length > 1000) {
+                historyArr.splice(0, historyArr.length - 1000);
             }
 
             let filteredLines = historyArr.filter(line => {
@@ -5081,9 +5107,13 @@ void handleSettingsSave() {
     }
 
     saveConfiguration(); // Saves to LittleFS JSON
+    addAppLogEx(1, "[Config] Settings Saved: SSID='%s', Pass='%s', MQTT='%s:%d' (DevName: '%s', RptInt: %dmin), Brightness: %d%%, TXPower: %d, ServoUpdInt: %ds, WLANTimeTrap: %ds, ESP-NOW Role: %d, Channel: %d, PeerMAC: '%s', Failsafe: %d",
+                sysConfig.wifi_ssid, sysConfig.wifi_pass, sysConfig.mqtt_server, sysConfig.mqtt_port,
+                sysConfig.mqtt_device_name, sysConfig.mqtt_report_interval, sysConfig.display_brightness,
+                sysConfig.wifi_tx_power, sysConfig.servo_update_interval, sysConfig.wlan_time_trap,
+                sysConfig.espnow_role, sysConfig.espnow_channel, sysConfig.espnow_peer_mac, sysConfig.espnow_failsafe_mode);
   } else {
-    Serial.println(
-        "[LittleFS] No changes detected. Skipping write to avoid flash wear.");
+    addAppLogEx(3, "[Config] Save requested, but no changes detected.");
   }
 
   // Re-init ESP-NOW if configured values changed
@@ -5096,6 +5126,7 @@ void handleSettingsSave() {
     uint8_t rawBrightness =
         (uint8_t)round(pow(sysConfig.display_brightness / 100.0, 2.2) * 255.0);
     tft.setBrightness(rawBrightness);
+    addAppLogEx(1, "[Display] TFT Backlight brightness set to %d%%", sysConfig.display_brightness);
   }
   WiFi.setTxPower((wifi_power_t)sysConfig.wifi_tx_power);
 
@@ -5155,6 +5186,7 @@ void handleSettingsSave() {
 void handleSettingsReset() {
   String action = server.arg("action");
   if (action == "reboot") {
+    addAppLogEx(1, "[System] Manual Reboot requested via Web UI! Rebooting...");
     String html = R"rawhtml(
 <!DOCTYPE html>
 <html>
@@ -5177,9 +5209,10 @@ void handleSettingsReset() {
 </html>
 )rawhtml";
     server.send(200, "text/html", html);
-    delay(1000);
+    delay(500);
     ESP.restart();
   } else if (action == "defaults") {
+    addAppLogEx(1, "[Config] Reset to default settings requested! (Brightness: 80%%, TX Power: 52, WLAN Trap: 120s)");
     bool hasChanges =
         (sysConfig.mqtt_report_interval != 5 ||
          sysConfig.display_brightness != 80 || sysConfig.wifi_tx_power != 52 ||
@@ -5208,6 +5241,8 @@ void handleSettingsReset() {
     server.sendHeader("Location", "/settings");
     server.send(303);
   } else if (action == "clear") {
+    addAppLogEx(1, "[Config] FACTORY RESET REQUESTED! Clearing /config.json from Flash and rebooting into Captive Portal...");
+    delay(300);
     LittleFS.remove("/config.json");
     String html = R"rawhtml(
 <!DOCTYPE html>
@@ -5231,9 +5266,10 @@ void handleSettingsReset() {
 </html>
 )rawhtml";
     server.send(200, "text/html", html);
-    delay(2000);
+    delay(500);
     ESP.restart();
   } else if (action == "delete_espnow") {
+    addAppLogEx(1, "[Pairing] UNPAIRED! Clearing Peer MAC '%s' and LMK from Flash...", sysConfig.espnow_peer_mac);
     memset(sysConfig.espnow_peer_mac, 0, sizeof(sysConfig.espnow_peer_mac));
     memset(sysConfig.espnow_lmk, 0, sizeof(sysConfig.espnow_lmk));
     protocolVersionMismatch = false;
@@ -5293,16 +5329,13 @@ void handleEspNowPairApi() {
       }
       proposedLmk[32] = '\0';
       originalWifiChannel = WiFi.status() == WL_CONNECTED ? WiFi.channel() : 1;
-      Serial.printf("[Pairing] Master pairing started. Proposed LMK: %s\n",
-                    proposedLmk);
+      addAppLogEx(1, "[Pairing] Master pairing STARTED! LMK generated: %s", proposedLmk);
     } else { // Slave
       currentPairingChannel = sysConfig.espnow_channel;
       lastChannelHopTime = millis();
       originalWifiChannel = WiFi.status() == WL_CONNECTED ? WiFi.channel() : 1;
       esp_wifi_set_channel(currentPairingChannel, WIFI_SECOND_CHAN_NONE);
-      Serial.printf(
-          "[Pairing] Slave pairing started on channel %d (Fast Track)\n",
-          currentPairingChannel);
+      addAppLogEx(1, "[Pairing] Slave pairing STARTED on Channel %d", currentPairingChannel);
     }
 
     tone(BUZZER_PIN, 880, 80);
@@ -5392,6 +5425,10 @@ void handleDryStrategyApi() {
   }
   saveConfiguration();
   updateServoRamping(true);
+  addAppLogEx(1, "[Strategy] Web UI changed Dry Strategy: Mode=%d (%s), Day=%d, HygroLimit=%d%%",
+              sysConfig.dry_strategy,
+              (sysConfig.dry_strategy == 0 ? "60/60" : (sysConfig.dry_strategy == 1 ? "VPD" : "VPD AUTO")),
+              sysConfig.vpd_auto_day, sysConfig.hygro_limit);
   server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
 
@@ -5436,6 +5473,11 @@ void checkGithubUpdateAsync(bool force) {
     int ver = fetchGithubFirmwareVersion();
     if (ver > 0) {
       cachedOnlineVersion = ver;
+      if (cachedOnlineVersion > localFirmwareVersion) {
+        addAppLogEx(1, "[OTA] GitHub Check: Online Firmware v1.%d AVAILABLE! (Local is v1.%d)", cachedOnlineVersion, localFirmwareVersion);
+      } else {
+        addAppLogEx(1, "[OTA] GitHub Check: Firmware is up to date (Local v1.%d == Online v1.%d)", localFirmwareVersion, cachedOnlineVersion);
+      }
     }
   }
 }
@@ -5890,15 +5932,13 @@ void handleAutoUpdateApi() {
     return;
   }
 
-  Serial.printf(
-      "[OTA] Update.end() SUCCESS! Written total: %u bytes. Rebooting...\n",
-      (unsigned int)writtenBytes);
+  addAppLogEx(1, "[OTA] Online OTA Update SUCCESSFUL! Written %u bytes. Magic byte (0xE9) verified. Rebooting...", (unsigned int)writtenBytes);
   server.send(200, "application/json",
               "{\"status\":\"ok\",\"message\":\"Update erfolgreich! iDry 26 "
               "reboot...\",\"written\":" +
                   String(writtenBytes) + "}");
 
-  delay(1000);
+  delay(500);
   ESP.restart();
 }
 
@@ -5907,8 +5947,7 @@ static bool g_manualUploadError = false;
 void handleUploadProgress() {
   HTTPUpload &upload = server.upload();
   if (upload.status == UPLOAD_FILE_START) {
-    Serial.printf("[OTA] Manual Firmware Upload Start: %s\n",
-                  upload.filename.c_str());
+    addAppLogEx(1, "[OTA] Manual Firmware Upload STARTED: %s", upload.filename.c_str());
     g_manualUploadError = false;
     if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
       Update.printError(Serial);
@@ -5919,9 +5958,7 @@ void handleUploadProgress() {
       // Magic Byte check on first block
       if (upload.totalSize == 0 && upload.currentSize >= 1) {
         if (upload.buf[0] != 0xE9) {
-          Serial.printf("[OTA] Manual Upload Aborted: Magic byte 0x%02X != "
-                        "0xE9 (Invalid ESP32 binary)\n",
-                        upload.buf[0]);
+          addAppLogEx(1, "[OTA] Manual Upload ABORTED: Magic byte 0x%02X != 0xE9 (Invalid ESP32 binary)", upload.buf[0]);
           g_manualUploadError = true;
           Update.abort();
           return;
@@ -5935,15 +5972,11 @@ void handleUploadProgress() {
   } else if (upload.status == UPLOAD_FILE_END) {
     if (!g_manualUploadError) {
       if (upload.totalSize < 100000) {
-        Serial.printf(
-            "[OTA] Manual Upload Aborted: Size too small (%u bytes < 100KB)\n",
-            (unsigned int)upload.totalSize);
+        addAppLogEx(1, "[OTA] Manual Upload ABORTED: Size too small (%u bytes < 100KB)", (unsigned int)upload.totalSize);
         g_manualUploadError = true;
         Update.abort();
       } else if (Update.end(true)) {
-        Serial.printf(
-            "[OTA] Manual Firmware Upload Finished! Total bytes: %u\n",
-            (unsigned int)upload.totalSize);
+        addAppLogEx(1, "[OTA] Manual Firmware Upload SUCCESSFUL! Written %u bytes.", (unsigned int)upload.totalSize);
       } else {
         Update.printError(Serial);
         g_manualUploadError = true;
@@ -5954,6 +5987,7 @@ void handleUploadProgress() {
 
 void handleUploadFinish() {
   if (g_manualUploadError || Update.hasError()) {
+    addAppLogEx(1, "[OTA] Manual Firmware Upload REJECTED! (Invalid binary or size < 100KB)");
     server.send(400, "text/html", R"rawhtml(
 <!DOCTYPE html>
 <html>
@@ -5980,6 +6014,7 @@ void handleUploadFinish() {
 </html>
 )rawhtml");
   } else {
+    addAppLogEx(1, "[OTA] Firmware Flash Complete! Magic Byte valid (0xE9). Rebooting into new firmware...");
     String html = R"rawhtml(
 <!DOCTYPE html>
 <html>
@@ -6005,7 +6040,7 @@ void handleUploadFinish() {
 </html>
 )rawhtml";
     server.send(200, "text/html", html);
-    delay(1000);
+    delay(500);
     ESP.restart();
   }
 }

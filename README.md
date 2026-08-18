@@ -112,13 +112,14 @@ Im Gegensatz zu gewöhnlichen Umluftventilatoren im Trockenzelt (die die Luft nu
   * **Master Terminal Box:** Cyan-Blauer Header (`#38bdf8`), blauer Rahmen & blaue Schrift (passend zum blauen Master-UI).
   * **Slave Terminal Box:** Soft-Roter Header (`#f87171`), roter Rahmen & rote Schrift (passend zum roten Slave-UI).
 
-### 9. 3-Stufiges Log-Filter-System & 300-Zeilen Browser-Historie (v104-v106)
+### 9. 3-Stufiges Log-Filter-System, 1.000-Zeilen Historie & 1-Klick Disketten-Export (`💾`) (v104-v112)
 * **3-Stufige Nachrichten-Klassifizierung:**
-  * **Level 1 (`STAT` / `ALARM`):** Status-Meldungen, Telemetrie, Buzzer-Test-Chimes & Schimmelschutz-Alarme. **Immer sichtbar!**
+  * **Level 1 (`STAT` / `ALARM`):** Telemetrie, Buzzer-Test-Chimes, Schimmelschutz-Alarme, Einstellungs-Änderungen (`[Config]`), Pairing-Events (`[Pairing]`) & OTA-Update Status (`[OTA]`). **Immer sichtbar!**
   * **Level 2 (`WARN`):** Warnmeldungen, Sensor-Resets & Verbindungsabbrüche.
   * **Level 3 (`DBG `):** Gesprächiger Verbose-Debug-Modus mit kontinuierlicher Ausgabe von Sensor-Messwerten (BME280/SHT3x/TSL2561), VPD-Matrix-Berechnungen, Servo-Winkeln & ESP-NOW Pings.
 * **Unabhängige Konsolen-Filter:** Jede Konsole (`Local` & `Remote`) besitzt in ihrer Überschrift eigene Filter-Radiobuttons `( ) L1  ( ) L2  (•) L3` zur clientseitigen Echtzeit-Gliederung.
-* **300-Zeilen Scrollable Memory:** Speichert im Browser-RAM bis zu 300 historische Log-Zeilen pro Terminal mit geschmeidigem Scrollbalken.
+* **1.000-Zeilen Browser-Arbeitsspeicher:** Speichert im Browser-RAM bis zu 1.000 historische Log-Zeilen pro Terminal mit geschmeidigem Scrollbalken (0 Byte ESP32 RAM).
+* **1-Klick Disketten-Export (`💾`):** Ein Klick auf den Disketten-Button `💾` im Header generiert augenblicklich eine saubere `.txt`-Datei der jeweiligen Log-Historie und öffnet den nativen Download-Dialog des Browsers!
 
 ### 10. Automatische Flash-Persistenz bei Mitternachts-Tageswechsel (v107)
 * **Mitternachts-Flash-Sync:** Beim automatischen Tageswechsel von `VPD AUTO` Punkt 00:00 Uhr Mitternacht (oder nach 24 Stunden) wird der neue Tag (z. B. Tag 8) sofort dauerhaft in `/config.json` via LittleFS Flash gespeichert.

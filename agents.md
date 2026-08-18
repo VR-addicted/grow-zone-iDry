@@ -110,16 +110,17 @@ Do not change SPI, I2C, ADC, or actuator pin assignments:
 
 ---
 
-## Live ESP-NOW RF Log Streaming, 3-Level Filtering & 300-Line Browser Buffer Rules
+## Live ESP-NOW RF Log Streaming, 3-Level Filtering, 1000-Line Browser Buffer & TXT Export Rules
 * **Protocol Versioning (V4):** `localProtocolVersion` is updated to **V4**. Log payload struct `EspNowLogMessage` (type 3, 180-byte string payload) streams all `addAppLog(...)` calls from Master to Slave over ESP-NOW.
 * **T-Pipe Logging Architecture (`addAppLogEx(level, format, ...)`):**
-  - **Level 1 (`STAT` / `ALARM`):** Essential telemetry heartbeats, buzzer test chimes, low-humidity alarms, and thermodynamic bypass alerts. **Always displayed!**
+  - **Level 1 (`STAT` / `ALARM`):** Essential telemetry heartbeats, buzzer test chimes, low-humidity alarms, thermodynamic bypass alerts, settings saves (`[Config]`), pairing events (`[Pairing]`), and OTA updates (`[OTA]`). **Always displayed!**
   - **Level 2 (`WARN`):** Warning chimes, sensor reset events, link loss events.
   - **Level 3 (`DBG `):** Rich, talkative debug output (BME280/SHT3x/TSL2561 readings, VPD AUTO matrix calculations, Servo ramping steps, ESP-NOW pings, MQTT publishes).
-* **Independent Client-Side Per-Console Filters:**
-  - `Local Terminal Console`: Headers contain independent `( ) L1  ( ) L2  (•) L3` filter radios.
-  - `Remote Peer Terminal Console [ESP-NOW]`: Headers contain independent `( ) L1  ( ) L2  (•) L3` filter radios.
-  - Toggling filters executes client-side filtering over the 300-line browser RAM log buffer (`webLogHistoryLocal` and `webLogHistoryRemote`) instantly without losing cached lines or re-fetching.
+* **Independent Client-Side Per-Console Filters & 1-Click Floppy Disk TXT Export:**
+  - `Local Terminal Console`: Headers contain independent `( ) L1  ( ) L2  (•) L3` filter radios and a Floppy Disk button `💾` between title and filter.
+  - `Remote Peer Terminal Console [ESP-NOW]`: Headers contain independent `( ) L1  ( ) L2  (•) L3` filter radios and a Floppy Disk button `💾` between title and filter.
+  - Clicking `💾` invokes `downloadLogHistory()` to generate and prompt a native browser `.txt` file download of the full 1000-line history array accumulated in client RAM (`webLogHistoryLocal` or `webLogHistoryRemote`).
+  - History buffer holds up to 1000 lines in browser RAM (0 Bytes ESP32 RAM used).
 * **Role-Based Dynamic Console Styling (Diagonal Symmetry):**
   - **Master Terminal Box:** Header `#38bdf8`, Border `1px solid rgba(56, 189, 248, 0.5)`, Background `#090d16`, Monospace Text `#38bdf8`.
   - **Slave Terminal Box:** Header `#f87171`, Border `1px solid rgba(248, 113, 113, 0.5)`, Background `#160909`, Monospace Text `#fca5a5`.
