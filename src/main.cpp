@@ -305,22 +305,22 @@ const float vpdTempMatrix[21][14] = {
 // ESP-NOW & PAIRING STATE MACHINE & WI-FI CHANNEL HOPS
 // =====================================================================
 struct __attribute__((packed)) EspNowMessage {
-  uint8_t pv;      // Protocol version (currently 4)
+  uint8_t pv;      // Protocol version (currently 5)
   uint8_t type;    // 0 = Pairing Beacon, 1 = Pairing Response, 2 = Command/Data
   char key[33];    // LMK hex string exchanged during pairing
   uint8_t command; // 0 = None, 1 = Play Winner Melody, 2 = Ping-Request/Data
-                   // Sync, 3 = Ping-Reply
+                   // Sync, 3 = Ping-Reply, 99 = Remote Reboot Request
   float value;     // Numeric payload value (rotorPosition)
   uint8_t dry_strategy; // Dry Strategy: 0 = 60/60 Mode, 1 = VPD Mode
 };
 
 struct __attribute__((packed)) EspNowLogMessage {
-  uint8_t pv;        // Protocol version (4)
+  uint8_t pv;        // Protocol version (5)
   uint8_t type;      // 3 = Log Line Stream
   char logText[180]; // Timestamped log message string
 };
 
-const uint8_t localProtocolVersion = 4;
+const uint8_t localProtocolVersion = 5;
 uint8_t remoteProtocolVersion = 0;
 bool protocolVersionMismatch = false;
 uint32_t avgEspNowIntervalMs = 1000;
@@ -739,6 +739,11 @@ void onEspNowDataRecv(const uint8_t *mac_addr, const uint8_t *data,
             }
           }
         }
+      } else if (msg.command == 99) {
+        addAppLogEx(1, "[System] Remote Reboot command received over ESP-NOW from %s! Rebooting in 300ms...", macStr);
+        tone(BUZZER_PIN, 600, 150);
+        delay(300);
+        ESP.restart();
       }
     } else {
       Serial.printf("[ESP-NOW] Blocked command from unpaired peer %s\n",
@@ -4692,6 +4697,16 @@ void handleSettingsPage() {
                 <div class="btn-row" style="margin-top: 5px; flex-direction: column; gap: 12px;">
                     <a href="/firmware" id="ota-update-btn" class="btn btn-secondary" style="width:100%; border-color: rgba(129, 140, 248, 0.4); color: #cbd5e1; text-decoration: none; text-align: center; display: block; box-sizing: border-box;">Firmware & OTA Update</a>
                     <button type="submit" name="action" value="reboot" class="btn btn-secondary" style="width:100%; border-color: rgba(74, 222, 128, 0.4); color: #4ade80;">Reboot Device</button>
+                    <button type="submit" name="action" value="reboot_linked" id="reboot-linked-btn" class="btn btn-secondary" style="width:100%; border-color: rgba(74, 222, 128, 0.4); color: #4ade80; display: )rawhtml";
+  if (strlen(sysConfig.espnow_peer_mac) > 0) {
+    html += "inline-flex;";
+  } else {
+    html += "none;";
+  }
+  html += R"rawhtml( align-items: center; justify-content: center; gap: 8px;">
+                        Reboot linked Device
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
+                    </button>
                     <button type="submit" name="action" value="defaults" class="btn btn-secondary" style="width:100%;">Restore Defaults (ohne WLAN/MQTT)</button>
                     <button type="submit" name="action" value="delete_espnow" class="btn btn-secondary" style="width:100%; border-color: rgba(239, 68, 68, 0.4); color: #f87171;">Delete ESPNOW connections</button>
                     <button type="button" id="complete-reset-btn" class="btn btn-danger" style="width:100%;">Complete Reset</button>
@@ -4891,6 +4906,14 @@ void handleSettingsPage() {
                         remoteBtn.style.display = "inline-block";
                     } else {
                         remoteBtn.style.display = "none";
+                    }
+                    const rebootLinkedBtn = document.getElementById('reboot-linked-btn');
+                    if (rebootLinkedBtn) {
+                        if (peerMac.length > 0) {
+                            rebootLinkedBtn.style.display = "inline-flex";
+                        } else {
+                            rebootLinkedBtn.style.display = "none";
+                        }
                     }
                     
                     pairingActive = data.espnow_pairing || false;
@@ -5213,6 +5236,63 @@ void handleSettingsReset() {
     server.send(200, "text/html", html);
     delay(500);
     ESP.restart();
+  } else if (action == "reboot_linked") {
+    if (strlen(sysConfig.espnow_peer_mac) == 0) {
+      server.send(400, "text/html",
+                  "<html><body><h1>Kein gekoppeltes Geraet vorhanden!</h1><p><a href='/settings'>Zurueck</a></p></body></html>");
+      return;
+    }
+
+    EspNowMessage msg;
+    memset(&msg, 0, sizeof(EspNowMessage));
+    msg.pv = localProtocolVersion;
+    msg.type = 2; // Data/Command
+    strlcpy(msg.key, sysConfig.espnow_lmk, sizeof(msg.key));
+    msg.command = 99; // Remote Reboot Command
+    msg.value = 0.0f;
+    msg.dry_strategy = sysConfig.dry_strategy;
+
+    uint8_t peerMac[6];
+    sscanf(sysConfig.espnow_peer_mac, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+           &peerMac[0], &peerMac[1], &peerMac[2], &peerMac[3], &peerMac[4], &peerMac[5]);
+
+    esp_now_peer_info_t peerInfo;
+    memset(&peerInfo, 0, sizeof(peerInfo));
+    memcpy(peerInfo.peer_addr, peerMac, 6);
+    peerInfo.channel = (sysConfig.espnow_channel > 0) ? sysConfig.espnow_channel : 1;
+    peerInfo.ifidx = WIFI_IF_STA;
+    peerInfo.encrypt = false;
+    if (esp_now_is_peer_exist(peerMac)) {
+      esp_now_mod_peer(&peerInfo);
+    } else {
+      esp_now_add_peer(&peerInfo);
+    }
+
+    esp_now_send(peerMac, (uint8_t *)&msg, sizeof(EspNowMessage));
+    addAppLogEx(1, "[System] Sent Remote Reboot command over ESP-NOW to linked peer: %s", sysConfig.espnow_peer_mac);
+
+    String html = R"rawhtml(
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Gekoppeltes Geraet startet neu</title>
+    <style>
+        body { background: #0f172a; color: white; text-align: center; padding-top: 100px; font-family: sans-serif; }
+        .box { background: #1e293b; padding: 40px; border-radius: 15px; display: inline-block; border: 1px solid rgba(255,255,255,0.1); }
+        h1 { color: #4ade80; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h1>Linked iDry 26 reboot.</h1>
+        <p>Remote reboot command sent over ESP-NOW! Stay calm, it will be back online in a second :-)</p>
+    </div>
+    <script>setTimeout(function(){ window.location.href = '/settings'; }, 4000);</script>
+</body>
+</html>
+)rawhtml";
+    server.send(200, "text/html", html);
   } else if (action == "defaults") {
     addAppLogEx(1, "[Config] Reset to default settings requested! (Brightness: 80%%, TX Power: 52, WLAN Trap: 120s)");
     bool hasChanges =

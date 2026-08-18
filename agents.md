@@ -110,10 +110,12 @@ Do not change SPI, I2C, ADC, or actuator pin assignments:
 
 ---
 
-## Live ESP-NOW RF Log Streaming, 3-Level Filtering, 1000-Line Browser Buffer & TXT Export Rules
-* **Protocol Versioning (V4):** `localProtocolVersion` is updated to **V4**. Log payload struct `EspNowLogMessage` (type 3, 180-byte string payload) streams all `addAppLog(...)` calls from Master to Slave over ESP-NOW.
+## Live ESP-NOW RF Log Streaming, 3-Level Filtering, Protocol V5 & Remote Linked Reboot Rules
+* **Protocol Versioning (V5):** `localProtocolVersion` is updated to **V5**.
+  - `EspNowLogMessage` (type 3, 180-byte string payload) streams all `addAppLog(...)` calls from Master to Slave over ESP-NOW.
+  - `EspNowMessage` command `99` (Remote Reboot Request) allows triggering a clean remote restart of the linked peer device over ESP-NOW.
 * **T-Pipe Logging Architecture (`addAppLogEx(level, format, ...)`):**
-  - **Level 1 (`STAT` / `ALARM`):** Essential telemetry heartbeats, buzzer test chimes, low-humidity alarms, thermodynamic bypass alerts, settings saves (`[Config]`), pairing events (`[Pairing]`), and OTA updates (`[OTA]`). **Always displayed!**
+  - **Level 1 (`STAT` / `ALARM`):** Essential telemetry heartbeats, buzzer test chimes, low-humidity alarms, thermodynamic bypass alerts, settings saves (`[Config]`), pairing events (`[Pairing]`), remote reboots (`[System]`), and OTA updates (`[OTA]`). **Always displayed!**
   - **Level 2 (`WARN`):** Warning chimes, sensor reset events, link loss events.
   - **Level 3 (`DBG `):** Rich, talkative debug output (BME280/SHT3x/TSL2561 readings, VPD AUTO matrix calculations, Servo ramping steps, ESP-NOW pings, MQTT publishes).
 * **Independent Client-Side Per-Console Filters & 1-Click Floppy Disk TXT Export:**
@@ -121,6 +123,8 @@ Do not change SPI, I2C, ADC, or actuator pin assignments:
   - `Remote Peer Terminal Console [ESP-NOW]`: Headers contain independent `( ) L1  ( ) L2  (•) L3` filter radios and a Floppy Disk button `💾` between title and filter.
   - Clicking `💾` invokes `downloadLogHistory()` to generate and prompt a native browser `.txt` file download of the full 1000-line history array accumulated in client RAM (`webLogHistoryLocal` or `webLogHistoryRemote`).
   - History buffer holds up to 1000 lines in browser RAM (0 Bytes ESP32 RAM used).
+* **HTTP Socket Teardown Hardening (`Connection: close`):**
+  - All REST endpoints (`/api/data`, `/api/history`) enforce `server.sendHeader("Connection", "close")` prior to sending HTTP responses. Ensures sockets are torn down immediately after each 1-second AJAX poll, eliminating LWIP TCP socket starvation.
 * **Role-Based Dynamic Console Styling (Diagonal Symmetry):**
   - **Master Terminal Box:** Header `#38bdf8`, Border `1px solid rgba(56, 189, 248, 0.5)`, Background `#090d16`, Monospace Text `#38bdf8`.
   - **Slave Terminal Box:** Header `#f87171`, Border `1px solid rgba(248, 113, 113, 0.5)`, Background `#160909`, Monospace Text `#fca5a5`.

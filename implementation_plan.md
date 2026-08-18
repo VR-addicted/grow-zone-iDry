@@ -1,10 +1,10 @@
-# Implementation Plan - Advanced Log Engine, RF Streaming & Telemetry (v100 - v113)
+# Implementation Plan - Advanced Log Engine, RF Streaming & Telemetry (v100 - v114 Milestone)
 
-This document presents the completed technical implementation plan for the **Dual-Console Live Log Engine**, **ESP-NOW RF T-Pipe Streaming**, **3-Level Filter System**, **1000-Line Browser Memory Buffer**, **1-Click Floppy Disk TXT Export**, **Automatic VPD AUTO Flash Persistence**, and **HTTP Socket Leak Elimination**.
+This document presents the completed technical implementation plan for the **Dual-Console Live Log Engine**, **ESP-NOW RF T-Pipe Streaming**, **3-Level Filter System**, **1000-Line Browser Memory Buffer**, **1-Click Floppy Disk TXT Export**, **Automatic VPD AUTO Flash Persistence**, **HTTP Socket Leak Elimination**, and **Remote Linked Device Reboot (Protocol V5)**.
 
 ---
 
-## Completed Milestones (Builds v100 - v113)
+## Completed Milestones (Builds v100 - v114 Milestone)
 
 ### 1. ESP-NOW RF T-Pipe Log Streaming (Builds v100 - v101)
 - Implemented `EspNowLogMessage` (type 3, 180-byte payload) for live RF log transmission from Master to Slave.
@@ -43,10 +43,14 @@ This document presents the completed technical implementation plan for the **Dua
 - Enforced `server.sendHeader("Connection", "close")` on `/api/data` and `/api/history` responses.
 - Eliminates LWIP TCP socket starvation (`CLOSE_WAIT` exhaustion) caused by continuous 1-second browser AJAX polling.
 
+### 10. Remote Linked Device Reboot & ESP-NOW Protocol V5 (v114 Milestone)
+- Added `Reboot linked Device` button in Settings UI with an SVG Link Established icon (`🔗`).
+- Updated ESP-NOW protocol version to **V5** and implemented command `99` (Remote Reboot Request) to reboot the paired device remotely.
+
 ---
 
 ## Verification & Build Status
 
-- **Firmware Version:** `v113`
+- **Firmware Version:** `v114` (Milestone Release)
 - **PlatformIO Build:** `SUCCESS` (Code 0)
-- **Synchronized Bundle Files:** `firmware.bin` (v113), `bootloader.bin`, `partitions.bin`, `version.txt` (v113) in `FIRMWARE/`.
+- **Synchronized Bundle Files:** `firmware.bin` (v114), `bootloader.bin`, `partitions.bin`, `version.txt` (v114) in `FIRMWARE/`.

@@ -125,6 +125,13 @@ Im Gegensatz zu gewöhnlichen Umluftventilatoren im Trockenzelt (die die Luft nu
 * **Mitternachts-Flash-Sync:** Beim automatischen Tageswechsel von `VPD AUTO` Punkt 00:00 Uhr Mitternacht (oder nach 24 Stunden) wird der neue Tag (z. B. Tag 8) sofort dauerhaft in `/config.json` via LittleFS Flash gespeichert.
 * **Neustart- & Update-Sicher:** Nach Firmware-Updates oder Stromausfällen startet das Gerät garantiert auf dem aktuellsten Tagesstand neu, ohne auf frühere Tage zurückzusprengen!
 
+### 11. Remote Linked Device Reboot & ESP-NOW Protokoll V5 (v114 Milestone)
+* **Fern-Neustart gekoppelter Partner (`Reboot linked Device`):** Ein neuer Button in den Einstellungen unter *Geräte-Management* mit stylischem *Link Established* Icon (`🔗`) ermöglicht das gezielte Neustarten des per ESP-NOW verbundenen Partner-Geräts (Master -> Slave oder Slave -> Master).
+* **Protokoll-Version V5:** Erweiterung des ESP-NOW Nachrichtenprotokolls um Command `99` (Remote Reboot Request). Das Zielgerät quittiert den Befehl mit einem Level-1 Log-Eintrag und führt nach 300ms einen sauberen Neustart aus.
+
+### 12. HTTP Socket-Teardown & Stabilitäts-Härtung (v113)
+* **Socket Leak Prevention (`Connection: close`):** Alle REST-API-Endpunkte (`/api/data`, `/api/history`) schließen TCP-Sockets unmittelbar nach der Datenübertragung. Verhindert das Überlaufen des LWIP TCP-Socket-Pools bei sekündlichem AJAX-Polling nachhaltig.
+
 ---
 
 ## 🏗️ Hardware-Ausbaustufen (Skalierbarkeit)
