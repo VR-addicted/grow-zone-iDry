@@ -681,8 +681,10 @@ void onEspNowDataRecv(const uint8_t *mac_addr, const uint8_t *data,
       } else if (msg.command == 2) {
         if (sysConfig.espnow_role == 2) {
           rotorPosition = msg.value;
-          remoteMasterDryStrategy = msg.dry_strategy;
-          addAppLogEx(3, "[ESP-NOW] RX Sync from Master: Rotor=%.0f%%, Mode=%d", msg.value, msg.dry_strategy);
+          if (msg.dry_strategy <= 2) {
+            remoteMasterDryStrategy = msg.dry_strategy;
+          }
+          addAppLogEx(3, "[ESP-NOW] RX Sync from Master: Rotor=%.0f%%, Mode=%d", msg.value, remoteMasterDryStrategy);
           static unsigned long lastSlaveSyncRecvTime = 0;
           if (lastSlaveSyncRecvTime == 0) {
             lastSlaveSyncRecvTime = millis();
@@ -696,6 +698,7 @@ void onEspNowDataRecv(const uint8_t *mac_addr, const uint8_t *data,
 
           // Construct and transmit Ping-Reply back to Master
           EspNowMessage replyMsg;
+          memset(&replyMsg, 0, sizeof(EspNowMessage));
           replyMsg.pv = localProtocolVersion;
           replyMsg.type = 2; // Data/Command
           strlcpy(replyMsg.key, sysConfig.espnow_lmk, sizeof(replyMsg.key));
@@ -6636,11 +6639,13 @@ void loop() {
         }
 
         EspNowMessage pingMsg;
+        memset(&pingMsg, 0, sizeof(EspNowMessage));
         pingMsg.pv = localProtocolVersion;
         pingMsg.type = 2; // Data/Command
         strlcpy(pingMsg.key, sysConfig.espnow_lmk, sizeof(pingMsg.key));
         pingMsg.command = 2; // Ping-Request
         pingMsg.value = rotorPosition;
+        pingMsg.dry_strategy = (uint8_t)sysConfig.dry_strategy;
 
         esp_now_send(peerMac, (uint8_t *)&pingMsg, sizeof(EspNowMessage));
 
@@ -6935,6 +6940,7 @@ void loop() {
                  &peerMac[1], &peerMac[2], &peerMac[3], &peerMac[4],
                  &peerMac[5]) == 6) {
         EspNowMessage syncMsg;
+        memset(&syncMsg, 0, sizeof(EspNowMessage));
         syncMsg.pv = localProtocolVersion;
         syncMsg.type = 2; // Data/Command
         strlcpy(syncMsg.key, sysConfig.espnow_lmk, sizeof(syncMsg.key));
