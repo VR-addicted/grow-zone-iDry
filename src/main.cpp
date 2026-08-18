@@ -2548,6 +2548,16 @@ void handlePortalRoot() {
             </div>
         </div>
     </div>
+
+    <!-- Remote Reboot Notification Modal -->
+    <div id="remote-reboot-modal" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(15,23,42,0.85); backdrop-filter:blur(10px); z-index:9999; align-items:center; justify-content:center; padding:20px;">
+        <div style="background:#1e293b; border:1px solid #f87171; border-radius:16px; padding:25px; max-width:420px; width:100%; text-align:center; box-shadow:0 25px 50px -12px rgba(0,0,0,0.8);">
+            <div style="font-size:36px; margin-bottom:10px;">⚡</div>
+            <h2 style="color:#f87171; font-size:18px; margin-bottom:10px; font-weight:600;">Remote Reboot ausgelöst!</h2>
+            <p style="color:#cbd5e1; font-size:13px; line-height:1.5; margin-bottom:20px;">Dieses Gerät wurde aus der Ferne von deinem gekoppelten Partner-Gerät per ESP-NOW neugestartet.</p>
+            <button type="button" onclick="document.getElementById('remote-reboot-modal').style.display='none';" style="background:rgba(248,113,113,0.15); border:1px solid #f87171; color:#f87171; padding:10px 24px; border-radius:8px; cursor:pointer; font-weight:600; font-size:13px; transition:all 0.2s;" onmouseover="this.style.background='rgba(248,113,113,0.3)'" onmouseout="this.style.background='rgba(248,113,113,0.15)'">Verstanden / Schließen</button>
+        </div>
+    </div>
     <script>
         const wifiSSID = ")rawhtml";
     html += String(sysConfig.wifi_ssid);
@@ -3431,6 +3441,17 @@ void handlePortalRoot() {
                     const allocEl = document.getElementById('footer-alloc');
                     if (allocEl) {
                         allocEl.innerText = data.max_alloc_heap ? (data.max_alloc_heap / 1024).toFixed(1) : '--';
+                    }
+
+                    if (data.sys_logs && Array.isArray(data.sys_logs)) {
+                        let hasRemoteReboot = data.sys_logs.some(l => l && l.includes('Remote Reboot command received'));
+                        if (hasRemoteReboot) {
+                            let rebootModal = document.getElementById('remote-reboot-modal');
+                            if (rebootModal && !rebootModal.dataset.shown) {
+                                rebootModal.style.display = 'flex';
+                                rebootModal.dataset.shown = "true";
+                            }
+                        }
                     }
 
                     let isSlave = (data.espnow_role === 2);
@@ -5276,19 +5297,20 @@ void handleSettingsReset() {
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>Gekoppeltes Geraet startet neu</title>
+    <title>Befehl gesendet</title>
     <style>
         body { background: #0f172a; color: white; text-align: center; padding-top: 100px; font-family: sans-serif; }
-        .box { background: #1e293b; padding: 40px; border-radius: 15px; display: inline-block; border: 1px solid rgba(255,255,255,0.1); }
-        h1 { color: #4ade80; margin-bottom: 20px; }
+        .box { background: #1e293b; padding: 30px; border-radius: 15px; display: inline-block; border: 1px solid rgba(255,255,255,0.1); }
+        h1 { color: #38bdf8; margin-bottom: 10px; font-size: 20px; }
+        p { color: #cbd5e1; font-size: 14px; }
     </style>
 </head>
 <body>
     <div class="box">
-        <h1>Linked iDry 26 reboot.</h1>
-        <p>Remote reboot command sent over ESP-NOW! Stay calm, it will be back online in a second :-)</p>
+        <h1>Fern-Neustart gesendet 🔗</h1>
+        <p>Der Reboot-Befehl wurde per ESP-NOW an den Partner übertragen.</p>
     </div>
-    <script>setTimeout(function(){ window.location.href = '/settings'; }, 4000);</script>
+    <script>setTimeout(function(){ window.location.href = '/settings'; }, 1000);</script>
 </body>
 </html>
 )rawhtml";
