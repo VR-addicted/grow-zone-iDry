@@ -1,10 +1,10 @@
-# Implementation Plan - Advanced Log Engine, RF Streaming & Telemetry (v100 - v112)
+# Implementation Plan - Advanced Log Engine, RF Streaming & Telemetry (v100 - v113)
 
-This document presents the completed technical implementation plan for the **Dual-Console Live Log Engine**, **ESP-NOW RF T-Pipe Streaming**, **3-Level Filter System**, **1000-Line Browser Memory Buffer**, **1-Click Floppy Disk TXT Export**, and **Automatic VPD AUTO Flash Persistence**.
+This document presents the completed technical implementation plan for the **Dual-Console Live Log Engine**, **ESP-NOW RF T-Pipe Streaming**, **3-Level Filter System**, **1000-Line Browser Memory Buffer**, **1-Click Floppy Disk TXT Export**, **Automatic VPD AUTO Flash Persistence**, and **HTTP Socket Leak Elimination**.
 
 ---
 
-## Completed Milestones (Builds v100 - v112)
+## Completed Milestones (Builds v100 - v113)
 
 ### 1. ESP-NOW RF T-Pipe Log Streaming (Builds v100 - v101)
 - Implemented `EspNowLogMessage` (type 3, 180-byte payload) for live RF log transmission from Master to Slave.
@@ -39,10 +39,14 @@ This document presents the completed technical implementation plan for the **Dua
 - Added a compact Floppy Disk icon button `💾` between title and filter in each console header.
 - Clicking `💾` invokes `downloadLogHistory()` to generate a clean `.txt` file from client RAM and prompt the browser's native Save File dialog.
 
+### 9. HTTP Socket Leak Elimination (Build v113)
+- Enforced `server.sendHeader("Connection", "close")` on `/api/data` and `/api/history` responses.
+- Eliminates LWIP TCP socket starvation (`CLOSE_WAIT` exhaustion) caused by continuous 1-second browser AJAX polling.
+
 ---
 
 ## Verification & Build Status
 
-- **Firmware Version:** `v112`
+- **Firmware Version:** `v113`
 - **PlatformIO Build:** `SUCCESS` (Code 0)
-- **Synchronized Bundle Files:** `firmware.bin` (v112), `bootloader.bin`, `partitions.bin`, `version.txt` (v112) in `FIRMWARE/`.
+- **Synchronized Bundle Files:** `firmware.bin` (v113), `bootloader.bin`, `partitions.bin`, `version.txt` (v113) in `FIRMWARE/`.

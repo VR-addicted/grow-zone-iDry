@@ -1924,6 +1924,7 @@ void handleGetData() {
 
   String jsonResponse;
   serializeJson(doc, jsonResponse);
+  server.sendHeader("Connection", "close");
   server.send(200, "application/json", jsonResponse);
 }
 
@@ -2091,6 +2092,7 @@ void handleGetHistory() {
 
   String jsonResponse;
   serializeJson(doc, jsonResponse);
+  server.sendHeader("Connection", "close");
   server.send(200, "application/json", jsonResponse);
 }
 
