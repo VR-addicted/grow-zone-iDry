@@ -350,6 +350,7 @@ void sendEspNowLogLine(const char* logLine) {
 
 unsigned long lastEspNowRxTime = 0;
 unsigned long lastEspNowTxSuccessTime = 0;
+unsigned long connectedSince = 0;
 static unsigned long lastWifiAttemptTime = 0;
 bool isPairingActive = false;
 unsigned long pairingStartTime = 0;
@@ -5553,8 +5554,8 @@ int fetchGithubFirmwareVersion() {
   HTTPClient http;
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   http.setTimeout(4000);
-  if (http.begin(client, "https://raw.githubusercontent.com/VR-addicted/"
-                         "grow-zone-iDry/main/FIRMWARE/version.txt")) {
+  String url = "https://raw.githubusercontent.com/VR-addicted/grow-zone-iDry/main/FIRMWARE/version.txt?nocache=" + String(millis());
+  if (http.begin(client, url.c_str())) {
     int httpCode = http.GET();
     if (httpCode == HTTP_CODE_OK) {
       String payload = http.getString();
@@ -5571,17 +5572,24 @@ int fetchGithubFirmwareVersion() {
 void checkGithubUpdateAsync(bool force) {
   if (WiFi.status() != WL_CONNECTED)
     return;
+  // Allow 10 seconds post-connection buffer for initial automatic check after boot
+  if (!force && connectedSince > 0 && (millis() - connectedSince < 10000)) {
+    return;
+  }
   if (force || lastGithubCheckTime == 0 ||
       millis() - lastGithubCheckTime >= 600000UL) {
-    lastGithubCheckTime = millis();
     int ver = fetchGithubFirmwareVersion();
     if (ver > 0) {
+      lastGithubCheckTime = millis();
       cachedOnlineVersion = ver;
       if (cachedOnlineVersion > localFirmwareVersion) {
         addAppLogEx(1, "[OTA] GitHub Check: Online Firmware v1.%d AVAILABLE! (Local is v1.%d)", cachedOnlineVersion, localFirmwareVersion);
       } else {
         addAppLogEx(1, "[OTA] GitHub Check: Firmware is up to date (Local v1.%d == Online v1.%d)", localFirmwareVersion, cachedOnlineVersion);
       }
+    } else {
+      // If network check failed, retry in 30 seconds instead of locking out for 10 minutes
+      lastGithubCheckTime = millis() - 570000UL;
     }
   }
 }
@@ -6927,7 +6935,6 @@ void loop() {
 
   // Connect / Maintain Wi-Fi Connection & Active Link Watchdog
   static unsigned long lastWifiCheck = 0;
-  static unsigned long connectedSince = 0;
   static unsigned long lastMqttOk = 0;
 
   // WLAN Watchdog Time Trap

@@ -1,10 +1,10 @@
-# Implementation Plan - Advanced Log Engine, RF Streaming & Telemetry (v100 - v116)
+# Implementation Plan - Advanced Log Engine, RF Streaming & Telemetry (v100 - v118)
 
-This document presents the completed technical implementation plan for the **Dual-Console Live Log Engine**, **ESP-NOW RF T-Pipe Streaming**, **3-Level Filter System**, **1000-Line Browser Memory Buffer**, **1-Click Floppy Disk TXT Export**, **Automatic VPD AUTO Flash Persistence**, **HTTP Socket Leak Elimination**, and **Remote Linked Device Reboot Notification Modal (Protocol V5)**.
+This document presents the completed technical implementation plan for the **Dual-Console Live Log Engine**, **ESP-NOW RF T-Pipe Streaming**, **3-Level Filter System**, **1000-Line Browser Memory Buffer**, **1-Click Floppy Disk TXT Export**, **Automatic VPD AUTO Flash Persistence**, **HTTP Socket Leak Elimination**, **Remote Linked Device Reboot Notification Modal**, and **Instant GitHub Update Detection via CDN Cache Bypassing**.
 
 ---
 
-## Completed Milestones (Builds v100 - v116)
+## Completed Milestones (Builds v100 - v118)
 
 ### 1. ESP-NOW RF T-Pipe Log Streaming (Builds v100 - v101)
 - Implemented `EspNowLogMessage` (type 3, 180-byte payload) for live RF log transmission from Master to Slave.
@@ -49,10 +49,14 @@ This document presents the completed technical implementation plan for the **Dua
 - Added a clean, dismissible modal dialog (`#remote-reboot-modal`) on the receiving device's Web UI:
   `⚡ Remote Reboot ausgelöst! Dieses Gerät wurde aus der Ferne von deinem gekoppelten Partner-Gerät per ESP-NOW neugestartet.`
 
+### 11. Instant GitHub Update Detection via CDN Cache Bypassing & 10s Boot Schedule (v117 - v118)
+- Appended `?nocache=` + `String(millis())` to `raw.githubusercontent.com` fetch requests, bypassing Fastly/GitHub 5-minute CDN caching.
+- Enforced a 10-second post-connection buffer (`connectedSince + 10000ms`) for the initial update check after boot, followed by regular 10-minute checks or instant checks upon entering `/firmware`.
+
 ---
 
 ## Verification & Build Status
 
-- **Firmware Version:** `v116`
+- **Firmware Version:** `v118`
 - **PlatformIO Build:** `SUCCESS` (Code 0)
-- **Synchronized Bundle Files:** `firmware.bin` (v116), `bootloader.bin`, `partitions.bin`, `version.txt` (v116) in `FIRMWARE/`.
+- **Synchronized Bundle Files:** `firmware.bin` (v118), `bootloader.bin`, `partitions.bin`, `version.txt` (v118) in `FIRMWARE/`.
