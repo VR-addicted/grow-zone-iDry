@@ -1,10 +1,10 @@
-# Implementation Plan - Advanced Log Engine, RF Streaming & Telemetry (v100 - v119)
+# Implementation Plan - Advanced Log Engine, RF Streaming & Telemetry (v100 - v120)
 
-This document presents the completed technical implementation plan for the **Dual-Console Live Log Engine**, **ESP-NOW RF T-Pipe Streaming**, **3-Level Filter System**, **1000-Line Browser Memory Buffer**, **1-Click Floppy Disk TXT Export**, **Automatic VPD AUTO Flash Persistence**, **HTTP Socket Leak Elimination**, **Remote Linked Device Reboot Notification Modal**, **CDN Cache Bypassing**, and **Home Assistant MQTT Firmware Update Auto-Discovery**.
+This document presents the completed technical implementation plan for the **Dual-Console Live Log Engine**, **ESP-NOW RF T-Pipe Streaming**, **3-Level Filter System**, **1000-Line Browser Memory Buffer**, **1-Click Floppy Disk TXT Export**, **Automatic VPD AUTO Flash Persistence**, **HTTP Socket Leak Elimination**, **Remote Linked Device Reboot Notification Modal**, **CDN Cache Bypassing**, **Home Assistant MQTT Firmware Update Auto-Discovery**, and **GPIO 0 Hardware Factory Reset Button**.
 
 ---
 
-## Completed Milestones (Builds v100 - v119)
+## Completed Milestones (Builds v100 - v120)
 
 ### 1. ESP-NOW RF T-Pipe Log Streaming (Builds v100 - v101)
 - Implemented `EspNowLogMessage` (type 3, 180-byte payload) for live RF log transmission from Master to Slave.
@@ -56,10 +56,16 @@ This document presents the completed technical implementation plan for the **Dua
 - Registered HA Auto-Discovery entities for `update_available` (binary update sensor) and `fw_version` (sensor) in `registerHomeAssistantDevices()`.
 - Telemetry payload publishes `update_available` (bool), `fw_version` (string), and `online_version` (int) continuously via MQTT.
 
+### 13. Hardware Factory Reset Button (GPIO 0) & Captive Portal Modal UX (v120)
+- Configured **GPIO 0** (`INPUT_PULLUP`) for 3-second press-and-hold hardware factory reset.
+- Plays descending alert melody, wipes `/config.json`, resets `sysConfig` to defaults with `dry_strategy = 0` (60/60 Mode standard for safe blind operation without Wi-Fi), and restarts into Captive Portal mode.
+- Added an amber, persistent Web UI notification modal (`⚙️ Werkseinstellungen geladen`) guiding users to connect to `iDRY26-Setup` at `http://192.168.4.1`.
+- Automatically executes `window.location.reload()` in the browser when telemetry signals return after re-configuration.
+
 ---
 
 ## Verification & Build Status
 
-- **Firmware Version:** `v119`
+- **Firmware Version:** `v120`
 - **PlatformIO Build:** `SUCCESS` (Code 0)
-- **Synchronized Bundle Files:** `firmware.bin` (v119), `bootloader.bin`, `partitions.bin`, `version.txt` (v119) in `FIRMWARE/`.
+- **Synchronized Bundle Files:** `firmware.bin` (v120), `bootloader.bin`, `partitions.bin`, `version.txt` (v120) in `FIRMWARE/`.

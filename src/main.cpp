@@ -525,6 +525,30 @@ float calculateSVP(float temp) {
 bool saveConfiguration();
 void initEspNow();
 
+void performFactoryReset(const char* sourceTag) {
+  addAppLogEx(1, "[System] FACTORY RESET TRIGGERED via %s! Clearing /config.json...", sourceTag);
+  
+  // Descending alert chime
+  tone(BUZZER_PIN, 1047, 120); // C6
+  delay(140);
+  tone(BUZZER_PIN, 784, 120);  // G5
+  delay(140);
+  tone(BUZZER_PIN, 523, 200);  // C5
+  delay(220);
+  noTone(BUZZER_PIN);
+
+  // Reset sysConfig struct to defaults and explicitly enforce 60/60 Mode (strategy = 0)
+  sysConfig = Config();
+  sysConfig.dry_strategy = 0;
+  sysConfig.log_level = 3;
+
+  LittleFS.remove("/config.json");
+  saveConfiguration();
+
+  delay(300);
+  ESP.restart();
+}
+
 void onEspNowDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
   char macStr[18];
   sprintf(macStr, "%02X:%02X:%02X:%02X:%02X:%02X", mac_addr[0], mac_addr[1],
@@ -2559,10 +2583,30 @@ void handlePortalRoot() {
             <button type="button" onclick="document.getElementById('remote-reboot-modal').style.display='none';" style="background:rgba(248,113,113,0.15); border:1px solid #f87171; color:#f87171; padding:10px 24px; border-radius:8px; cursor:pointer; font-weight:600; font-size:13px; transition:all 0.2s;" onmouseover="this.style.background='rgba(248,113,113,0.3)'" onmouseout="this.style.background='rgba(248,113,113,0.15)'">Verstanden / Schließen</button>
         </div>
     </div>
+
+    <!-- Factory Reset / Captive Portal Notification Modal -->
+    <div id="factory-reset-modal" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(15,23,42,0.9); backdrop-filter:blur(12px); z-index:99999; align-items:center; justify-content:center; padding:20px;">
+        <div style="background:#1e293b; border:1px solid #eab308; border-radius:18px; padding:28px; max-width:440px; width:100%; text-align:center; box-shadow:0 25px 50px -12px rgba(0,0,0,0.9);">
+            <div style="font-size:42px; margin-bottom:12px;">⚙️</div>
+            <h2 style="color:#eab308; font-size:20px; margin-bottom:12px; font-weight:700;">Werkseinstellungen geladen</h2>
+            <p style="color:#e2e8f0; font-size:13.5px; line-height:1.6; margin-bottom:15px; text-align:left;">
+                Das Gerät wurde zurückgesetzt und befindet sich im <b>Einrichtungs-Modus</b> (Access Point).
+            </p>
+            <div style="background:rgba(234,179,8,0.1); border:1px solid rgba(234,179,8,0.3); border-radius:10px; padding:12px 15px; margin-bottom:20px; text-align:left; font-size:12.5px; color:#fef08a; line-height:1.5;">
+                <b>Schritte zur Wiederherstellung:</b><br>
+                1. Verbinde dich mit dem WLAN <b>iDRY26-Setup</b><br>
+                2. Öffne im Browser <b>http://192.168.4.1</b><br>
+                3. WLAN/MQTT eintragen &amp; speichern.
+            </div>
+            <div style="font-size:11px; color:#94a3b8; margin-bottom:15px;">Hinweis: Standard-Modus ist auf <b>60/60 Blind-Betrieb</b> voreingestellt.</div>
+            <button type="button" onclick="document.getElementById('factory-reset-modal').style.display='none'; document.getElementById('factory-reset-modal').dataset.closed='true';" style="background:rgba(234,179,8,0.2); border:1px solid #eab308; color:#eab308; padding:10px 24px; border-radius:8px; cursor:pointer; font-weight:600; font-size:13px; transition:all 0.2s;" onmouseover="this.style.background='rgba(234,179,8,0.35)'" onmouseout="this.style.background='rgba(234,179,8,0.2)'">Verstanden / Schließen</button>
+        </div>
+    </div>
     <script>
         const wifiSSID = ")rawhtml";
     html += String(sysConfig.wifi_ssid);
     html += R"rawhtml(";
+        let wasInPortalMode = false;
         let favCanvas = null;
         function updateFaviconMoon(p, isSlave) {
             if (!favCanvas) {
@@ -3453,6 +3497,17 @@ void handlePortalRoot() {
                                 rebootModal.dataset.shown = "true";
                             }
                         }
+                    }
+
+                    if (data.is_portal || data.is_factory_reset) {
+                        wasInPortalMode = true;
+                        let resetModal = document.getElementById('factory-reset-modal');
+                        if (resetModal && !resetModal.dataset.closed) {
+                            resetModal.style.display = 'flex';
+                        }
+                    } else if (wasInPortalMode) {
+                        wasInPortalMode = false;
+                        window.location.reload();
                     }
 
                     let isSlave = (data.espnow_role === 2);
@@ -5346,9 +5401,6 @@ void handleSettingsReset() {
     server.sendHeader("Location", "/settings");
     server.send(303);
   } else if (action == "clear") {
-    addAppLogEx(1, "[Config] FACTORY RESET REQUESTED! Clearing /config.json from Flash and rebooting into Captive Portal...");
-    delay(300);
-    LittleFS.remove("/config.json");
     String html = R"rawhtml(
 <!DOCTYPE html>
 <html>
@@ -5372,7 +5424,7 @@ void handleSettingsReset() {
 )rawhtml";
     server.send(200, "text/html", html);
     delay(500);
-    ESP.restart();
+    performFactoryReset("Web UI (Complete Reset Button)");
   } else if (action == "delete_espnow") {
     addAppLogEx(1, "[Pairing] UNPAIRED! Clearing Peer MAC '%s' and LMK from Flash...", sysConfig.espnow_peer_mac);
     memset(sysConfig.espnow_peer_mac, 0, sizeof(sysConfig.espnow_peer_mac));
@@ -6543,9 +6595,10 @@ void setup() {
   delay(2000);
   addAppLog("=== iDRY26 v1.99 System Boot. FreeHeap: %u B, MaxAlloc: %u B ===", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
-  // Initialize Buzzer
+  // Initialize Buzzer & Hardware Boot Button (GPIO 0)
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
+  pinMode(0, INPUT_PULLUP); // GPIO 0 Hardware Boot / Reset Button (active LOW)
 
   // Startup melody (Ascending arpeggio)
   tone(BUZZER_PIN, 523, 100); // C5
@@ -6688,6 +6741,23 @@ void loop() {
     loopsPerSecond = loopCounter;
     loopCounter = 0;
     lastLoopBenchTime = millis();
+  }
+
+  // =====================================================================
+  // HARDWARE FACTORY RESET BUTTON (GPIO 0 / BOOT BUTTON) - 3 SEC HOLD
+  // =====================================================================
+  static unsigned long gpio0PressStartTime = 0;
+  static bool gpio0ResetTriggered = false;
+  if (digitalRead(0) == LOW) { // Button pressed (active LOW)
+    if (gpio0PressStartTime == 0) {
+      gpio0PressStartTime = millis();
+    } else if (!gpio0ResetTriggered && (millis() - gpio0PressStartTime >= 3000)) {
+      gpio0ResetTriggered = true;
+      performFactoryReset("Hardware Button (GPIO 0)");
+    }
+  } else {
+    gpio0PressStartTime = 0;
+    gpio0ResetTriggered = false;
   }
 
   // Periodic online firmware update check (once at boot, then every 10 min)
