@@ -2032,6 +2032,7 @@ void handleGetData() {
   doc["espnow_failsafe_mode"] = sysConfig.espnow_failsafe_mode;
   doc["wifi_mac"] = WiFi.macAddress();
   doc["wifi_channel"] = WiFi.status() == WL_CONNECTED ? WiFi.channel() : 1;
+  doc["rssi"] = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : -100;
   doc["watchdog_reset_countdown"] = getWatchdogResetCountdown();
   doc["update_available"] = (cachedOnlineVersion > localFirmwareVersion);
   doc["online_version"] = cachedOnlineVersion;
@@ -2674,6 +2675,12 @@ void handlePortalRoot() {
                 </span>
                 <span class="val" id="sys-rssi">--</span>
             </div>
+            <details open class="hist-toggle" id="details-rssi" ontoggle="renderAllCharts()">
+                <summary>4h Verlauf (WLAN RSSI Signal)</summary>
+                <div class="spark-box" onclick="openChartZoom('rssi', 'WLAN Signalstärke (RSSI)')">
+                    <canvas id="cv-rssi"></canvas>
+                </div>
+            </details>
             <details open class="hist-toggle" id="details-logs-local" style="margin-top: 12px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 8px;">
                 <summary style="font-size: 11px; color: #38bdf8; cursor: pointer; user-select: none; font-weight: bold; outline: none; display: flex; justify-content: space-between; align-items: center;">
                     <span style="display: inline-flex; align-items: center; gap: 8px;">
@@ -3996,10 +4003,12 @@ void handlePortalRoot() {
             const h = canvas.height = boxH * dpr;
 
             ctx.clearRect(0, 0, w, h);
-            if (!history120m || history120m.length === 0) return;
+            const isRssi = (type === 'rssi');
+            const targetHist = (isRssi && history24h && history24h.length > 0) ? history24h : history120m;
+            if (!targetHist || targetHist.length === 0) return;
 
-            const count = (type === 'rssi') ? 120 : 60;
-            const data120m = history120m.slice(-count);
+            const count = isRssi ? 24 : 60;
+            const data120m = targetHist.slice(-count);
 
             let minY = 0, maxY = 100, midY = 50;
             let labelMax = "100", labelMid = "50", labelMin = "0";
