@@ -2490,12 +2490,12 @@ void handlePortalRoot() {
                         <span id="purge-badge" style="font-size: 10.5px; font-family: monospace; font-weight: bold; padding: 2px 6px; border-radius: 4px; background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3);">Aus</span>
                     </div>
                     
-                    <!-- 2.5x Enlarged & Centered Sanduhr SVG -->
-                    <div id="hourglass-container" style="width: 70px; height: 105px; margin: 10px auto 14px auto; position: relative;">
+                    <!-- Enlarged & Centered Sanduhr SVG (+40% size, 95x142px) -->
+                    <div id="hourglass-container" style="width: 95px; height: 142px; margin: 12px auto 16px auto; position: relative;">
                         <svg viewBox="0 0 60 100" width="100%" height="100%">
                             <path d="M 10 5 L 50 5 L 33 48 C 31 50, 31 50, 33 52 L 50 95 L 10 95 L 27 52 C 29 50, 29 50, 27 48 Z" fill="none" stroke="#64748b" stroke-width="3" stroke-linejoin="round"/>
                             <polygon id="sand-top" points="14,10 46,10 30,46" fill="#38bdf8" style="transform-origin: 30px 46px; transition: transform 0.5s ease;"/>
-                            <line id="sand-stream" x1="30" y1="50" x2="30" y2="92" stroke="#38bdf8" stroke-width="2.5" stroke-linecap="round" style="opacity: 0; transition: opacity 0.3s;"/>
+                            <line id="sand-stream" x1="30" y1="50" x2="30" y2="88" stroke="#38bdf8" stroke-width="2.5" stroke-linecap="round" style="opacity: 0; transition: opacity 0.3s;"/>
                             <polygon id="sand-bottom" points="30,58 46,92 14,92" fill="#38bdf8" style="transform-origin: 30px 92px; transition: transform 0.5s ease;"/>
                         </svg>
                     </div>
@@ -2510,14 +2510,14 @@ void handlePortalRoot() {
                                 <option value="20">20 min</option>
                                 <option value="30">30 min</option>
                                 <option value="45">45 min</option>
-                                <option value="60">60 min</option>
-                                <option value="120">120 min</option>
-                                <option value="180">180 min</option>
-                                <option value="240">240 min</option>
-                                <option value="300">300 min</option>
-                                <option value="600">600 min</option>
-                                <option value="720">720 min</option>
-                                <option value="1440">1440 min</option>
+                                <option value="60">1 h</option>
+                                <option value="120">2 h</option>
+                                <option value="180">3 h</option>
+                                <option value="240">4 h</option>
+                                <option value="300">5 h</option>
+                                <option value="600">10 h</option>
+                                <option value="720">12 h</option>
+                                <option value="1440">24 h</option>
                             </select>
                         </div>
                         <div style="flex: 1;">
@@ -2527,14 +2527,14 @@ void handlePortalRoot() {
                                 <option value="20">20 sec</option>
                                 <option value="30">30 sec</option>
                                 <option value="45">45 sec</option>
-                                <option value="60">60 sec</option>
-                                <option value="90">90 sec</option>
-                                <option value="120">120 sec</option>
-                                <option value="180">180 sec</option>
-                                <option value="240">240 sec</option>
-                                <option value="300">300 sec</option>
-                                <option value="450">450 sec</option>
-                                <option value="600">600 sec</option>
+                                <option value="60">1 min</option>
+                                <option value="90">1.5 min</option>
+                                <option value="120">2 min</option>
+                                <option value="180">3 min</option>
+                                <option value="240">4 min</option>
+                                <option value="300">5 min</option>
+                                <option value="450">7.5 min</option>
+                                <option value="600">10 min</option>
                             </select>
                         </div>
                     </div>
@@ -3674,8 +3674,8 @@ void handlePortalRoot() {
                             purgeBadge.style.background = "rgba(255,255,255,0.05)";
                             purgeBadge.style.borderColor = "rgba(255,255,255,0.1)";
                         }
-                        if (sandTop) sandTop.style.transform = "scaleY(0)";
-                        if (sandBottom) sandBottom.style.transform = "scaleY(0)";
+                        if (sandTop) sandTop.style.transform = "scale(0)";
+                        if (sandBottom) sandBottom.style.transform = "scale(0)";
                         if (sandStream) sandStream.style.opacity = "0";
                     } else if (data.purge_active) {
                         // ACTIVE PURGE (100% AUF) -> RED WARN SAND!
@@ -3691,7 +3691,7 @@ void handlePortalRoot() {
                         }
                         if (sandTop) {
                             sandTop.setAttribute("fill", "#f87171");
-                            sandTop.style.transform = "scaleY(" + pct + ")";
+                            sandTop.style.transform = "scale(" + pct + ")";
                         }
                         if (sandStream) {
                             sandStream.setAttribute("stroke", "#f87171");
@@ -3699,7 +3699,7 @@ void handlePortalRoot() {
                         }
                         if (sandBottom) {
                             sandBottom.setAttribute("fill", "#f87171");
-                            sandBottom.style.transform = "scaleY(" + (1 - pct) + ")";
+                            sandBottom.style.transform = "scale(" + (1 - pct) + ")";
                         }
                     } else {
                         // NORMAL COUNTDOWN -> HELLBLAUER SAND!
@@ -3720,7 +3720,7 @@ void handlePortalRoot() {
                         }
                         if (sandTop) {
                             sandTop.setAttribute("fill", "#38bdf8");
-                            sandTop.style.transform = "scaleY(" + pct + ")";
+                            sandTop.style.transform = "scale(" + pct + ")";
                         }
                         if (sandStream) {
                             sandStream.setAttribute("stroke", "#38bdf8");
@@ -3728,7 +3728,7 @@ void handlePortalRoot() {
                         }
                         if (sandBottom) {
                             sandBottom.setAttribute("fill", "#38bdf8");
-                            sandBottom.style.transform = "scaleY(" + (1 - pct) + ")";
+                            sandBottom.style.transform = "scale(" + (1 - pct) + ")";
                         }
                     }
 
