@@ -2484,7 +2484,7 @@ void handlePortalRoot() {
                         <canvas id="cv-rotor"></canvas>
                     </div>
                 </details>
-                <div style="margin-top: 15px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 12px;">
+                <div id="purge-section" style="margin-top: 15px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 12px;">
                     <div style="font-size: 11px; font-weight: bold; text-transform: uppercase; color: #94a3b8; letter-spacing: 0.5px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
                         <span>⏳ Stoßlüftungs-Timer</span>
                         <span id="purge-badge" style="font-size: 10.5px; font-family: monospace; font-weight: bold; padding: 2px 6px; border-radius: 4px; background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3);">Aus</span>
@@ -3652,83 +3652,90 @@ void handlePortalRoot() {
                     if (m) m.style.backgroundColor = '#191b28';
                     setMoon(data.rotor_position, data.espnow_role === 2);
 
-                    // Update Purge Timer & Sanduhr animation
-                    let purgeIntSel = document.getElementById('purge-interval-select');
-                    let purgeDurSel = document.getElementById('purge-duration-select');
-                    if (purgeIntSel && document.activeElement !== purgeIntSel) {
-                        purgeIntSel.value = data.purge_interval_min !== undefined ? data.purge_interval_min : 240;
-                    }
-                    if (purgeDurSel && document.activeElement !== purgeDurSel) {
-                        purgeDurSel.value = data.purge_duration_sec !== undefined ? data.purge_duration_sec : 30;
-                    }
-
-                    let purgeBadge = document.getElementById('purge-badge');
-                    let sandTop = document.getElementById('sand-top');
-                    let sandStream = document.getElementById('sand-stream');
-                    let sandBottom = document.getElementById('sand-bottom');
-
-                    if (data.purge_interval_min === 0) {
-                        if (purgeBadge) {
-                            purgeBadge.innerText = "Aus";
-                            purgeBadge.style.color = "#94a3b8";
-                            purgeBadge.style.background = "rgba(255,255,255,0.05)";
-                            purgeBadge.style.borderColor = "rgba(255,255,255,0.1)";
-                        }
-                        if (sandTop) sandTop.style.transform = "scale(0)";
-                        if (sandBottom) sandBottom.style.transform = "scale(0)";
-                        if (sandStream) sandStream.style.opacity = "0";
-                    } else if (data.purge_active) {
-                        // ACTIVE PURGE (100% AUF) -> RED WARN SAND!
-                        let remaining = data.purge_remaining_sec !== undefined ? data.purge_remaining_sec : 0;
-                        let totalDur = data.purge_duration_sec || 30;
-                        let pct = Math.max(0, Math.min(1, remaining / totalDur));
-                        
-                        if (purgeBadge) {
-                            purgeBadge.innerText = "🔥 100% AUF (" + remaining + "s)";
-                            purgeBadge.style.color = "#f87171";
-                            purgeBadge.style.background = "rgba(248, 113, 113, 0.2)";
-                            purgeBadge.style.borderColor = "rgba(248, 113, 113, 0.4)";
-                        }
-                        if (sandTop) {
-                            sandTop.setAttribute("fill", "#f87171");
-                            sandTop.style.transform = "scale(" + pct + ")";
-                        }
-                        if (sandStream) {
-                            sandStream.setAttribute("stroke", "#f87171");
-                            sandStream.style.opacity = "1";
-                        }
-                        if (sandBottom) {
-                            sandBottom.setAttribute("fill", "#f87171");
-                            sandBottom.style.transform = "scale(" + (1 - pct) + ")";
-                        }
+                    // Update Purge Timer & Sanduhr animation (Hidden in Slave role 2)
+                    let purgeSection = document.getElementById('purge-section');
+                    if (data.espnow_role === 2) {
+                        if (purgeSection) purgeSection.style.display = 'none';
                     } else {
-                        // NORMAL COUNTDOWN -> HELLBLAUER SAND!
-                        let remaining = data.purge_remaining_sec !== undefined ? data.purge_remaining_sec : 0;
-                        let totalIntSec = (data.purge_interval_min || 240) * 60;
-                        let pct = Math.max(0, Math.min(1, remaining / totalIntSec));
-                        
-                        let h = Math.floor(remaining / 3600);
-                        let m = Math.floor((remaining % 3600) / 60);
-                        let s = remaining % 60;
-                        let timeStr = "In " + (h > 0 ? (h + "h " + (m < 10 ? "0" : "") + m + "m") : (m + ":" + (s < 10 ? "0" : "") + s));
+                        if (purgeSection) purgeSection.style.display = 'block';
 
-                        if (purgeBadge) {
-                            purgeBadge.innerText = timeStr;
-                            purgeBadge.style.color = "#38bdf8";
-                            purgeBadge.style.background = "rgba(56, 189, 248, 0.15)";
-                            purgeBadge.style.borderColor = "rgba(56, 189, 248, 0.3)";
+                        let purgeIntSel = document.getElementById('purge-interval-select');
+                        let purgeDurSel = document.getElementById('purge-duration-select');
+                        if (purgeIntSel && document.activeElement !== purgeIntSel) {
+                            purgeIntSel.value = data.purge_interval_min !== undefined ? data.purge_interval_min : 240;
                         }
-                        if (sandTop) {
-                            sandTop.setAttribute("fill", "#38bdf8");
-                            sandTop.style.transform = "scale(" + pct + ")";
+                        if (purgeDurSel && document.activeElement !== purgeDurSel) {
+                            purgeDurSel.value = data.purge_duration_sec !== undefined ? data.purge_duration_sec : 30;
                         }
-                        if (sandStream) {
-                            sandStream.setAttribute("stroke", "#38bdf8");
-                            sandStream.style.opacity = "1";
-                        }
-                        if (sandBottom) {
-                            sandBottom.setAttribute("fill", "#38bdf8");
-                            sandBottom.style.transform = "scale(" + (1 - pct) + ")";
+
+                        let purgeBadge = document.getElementById('purge-badge');
+                        let sandTop = document.getElementById('sand-top');
+                        let sandStream = document.getElementById('sand-stream');
+                        let sandBottom = document.getElementById('sand-bottom');
+
+                        if (data.purge_interval_min === 0) {
+                            if (purgeBadge) {
+                                purgeBadge.innerText = "Aus";
+                                purgeBadge.style.color = "#94a3b8";
+                                purgeBadge.style.background = "rgba(255,255,255,0.05)";
+                                purgeBadge.style.borderColor = "rgba(255,255,255,0.1)";
+                            }
+                            if (sandTop) sandTop.style.transform = "scale(0)";
+                            if (sandBottom) sandBottom.style.transform = "scale(0)";
+                            if (sandStream) sandStream.style.opacity = "0";
+                        } else if (data.purge_active) {
+                            // ACTIVE PURGE (100% AUF) -> RED WARN SAND!
+                            let remaining = data.purge_remaining_sec !== undefined ? data.purge_remaining_sec : 0;
+                            let totalDur = data.purge_duration_sec || 30;
+                            let pct = Math.max(0, Math.min(1, remaining / totalDur));
+                            
+                            if (purgeBadge) {
+                                purgeBadge.innerText = "🔥 100% AUF (" + remaining + "s)";
+                                purgeBadge.style.color = "#f87171";
+                                purgeBadge.style.background = "rgba(248, 113, 113, 0.2)";
+                                purgeBadge.style.borderColor = "rgba(248, 113, 113, 0.4)";
+                            }
+                            if (sandTop) {
+                                sandTop.setAttribute("fill", "#f87171");
+                                sandTop.style.transform = "scale(" + pct + ")";
+                            }
+                            if (sandStream) {
+                                sandStream.setAttribute("stroke", "#f87171");
+                                sandStream.style.opacity = "1";
+                            }
+                            if (sandBottom) {
+                                sandBottom.setAttribute("fill", "#f87171");
+                                sandBottom.style.transform = "scale(" + (1 - pct) + ")";
+                            }
+                        } else {
+                            // NORMAL COUNTDOWN -> HELLBLAUER SAND!
+                            let remaining = data.purge_remaining_sec !== undefined ? data.purge_remaining_sec : 0;
+                            let totalIntSec = (data.purge_interval_min || 240) * 60;
+                            let pct = Math.max(0, Math.min(1, remaining / totalIntSec));
+                            
+                            let h = Math.floor(remaining / 3600);
+                            let m = Math.floor((remaining % 3600) / 60);
+                            let s = remaining % 60;
+                            let timeStr = "In " + (h > 0 ? (h + "h " + (m < 10 ? "0" : "") + m + "m") : (m + ":" + (s < 10 ? "0" : "") + s));
+
+                            if (purgeBadge) {
+                                purgeBadge.innerText = timeStr;
+                                purgeBadge.style.color = "#38bdf8";
+                                purgeBadge.style.background = "rgba(56, 189, 248, 0.15)";
+                                purgeBadge.style.borderColor = "rgba(56, 189, 248, 0.3)";
+                            }
+                            if (sandTop) {
+                                sandTop.setAttribute("fill", "#38bdf8");
+                                sandTop.style.transform = "scale(" + pct + ")";
+                            }
+                            if (sandStream) {
+                                sandStream.setAttribute("stroke", "#38bdf8");
+                                sandStream.style.opacity = "1";
+                            }
+                            if (sandBottom) {
+                                sandBottom.setAttribute("fill", "#38bdf8");
+                                sandBottom.style.transform = "scale(" + (1 - pct) + ")";
+                            }
                         }
                     }
 
