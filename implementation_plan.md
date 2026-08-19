@@ -1,10 +1,10 @@
-# Implementation Plan - Advanced Log Engine, RF Streaming & Telemetry (v100 - v120)
+# Implementation Plan - Advanced Log Engine, RF Streaming & Telemetry (v100 - v121)
 
-This document presents the completed technical implementation plan for the **Dual-Console Live Log Engine**, **ESP-NOW RF T-Pipe Streaming**, **3-Level Filter System**, **1000-Line Browser Memory Buffer**, **1-Click Floppy Disk TXT Export**, **Automatic VPD AUTO Flash Persistence**, **HTTP Socket Leak Elimination**, **Remote Linked Device Reboot Notification Modal**, **CDN Cache Bypassing**, **Home Assistant MQTT Firmware Update Auto-Discovery**, and **GPIO 0 Hardware Factory Reset Button**.
+This document presents the completed technical implementation plan for the **Dual-Console Live Log Engine**, **ESP-NOW RF T-Pipe Streaming**, **3-Level Filter System**, **1000-Line Browser Memory Buffer**, **1-Click Floppy Disk TXT Export**, **Automatic VPD AUTO Flash Persistence**, **HTTP Socket Leak Elimination**, **Remote Linked Device Reboot Notification Modal**, **CDN Cache Bypassing**, **Home Assistant MQTT Firmware Update Auto-Discovery**, **GPIO 0 Hardware Factory Reset Button**, and **Web UI Optional Password Protection with Public Telemetry**.
 
 ---
 
-## Completed Milestones (Builds v100 - v120)
+## Completed Milestones (Builds v100 - v121)
 
 ### 1. ESP-NOW RF T-Pipe Log Streaming (Builds v100 - v101)
 - Implemented `EspNowLogMessage` (type 3, 180-byte payload) for live RF log transmission from Master to Slave.
@@ -62,10 +62,27 @@ This document presents the completed technical implementation plan for the **Dua
 - Added an amber, persistent Web UI notification modal (`⚙️ Werkseinstellungen geladen`) guiding users to connect to `iDRY26-Setup` at `http://192.168.4.1`.
 - Automatically executes `window.location.reload()` in the browser when telemetry signals return after re-configuration.
 
+### 14. Web UI Optional Password Protection with Public Telemetry (v121)
+- Added `web_password` (up to 32 chars) to `Config` struct, saved in `/config.json` with CRC32 protection.
+- **Optional Activation:**
+  - Empty field = Web UI protection **DISABLED** (open access).
+  - Masked input `"passwort eintragen"` in Settings under WLAN/Security section. When filled, protection is **ENABLED**.
+- **"Kostenlose" Public Telemetry (No Login Required):**
+  - Dry Strategy Header & Active Mode Indicator (60/60, VPD, VPD AUTO).
+  - Poti cards (Poti A, B, C).
+  - Rotor position opening (%).
+  - Sensor cards (BME280/SHT3x Temp, Hum, Dewpoint, Barometer, Light).
+- **Protected Areas (Login Card Required):**
+  - Terminal Consoles (Local Console & Remote Console).
+  - Settings Page (`/settings`) & Firmware OTA Page (`/firmware`).
+  - Mode switching & POST API endpoints.
+  - Unauthenticated `/api/data` requests automatically omit system log arrays.
+- **Session Retention:** Logged-in session stored in browser `sessionStorage` for seamless, persistent navigation without re-typing.
+
 ---
 
 ## Verification & Build Status
 
-- **Firmware Version:** `v120`
+- **Firmware Version:** `v121`
 - **PlatformIO Build:** `SUCCESS` (Code 0)
-- **Synchronized Bundle Files:** `firmware.bin` (v120), `bootloader.bin`, `partitions.bin`, `version.txt` (v120) in `FIRMWARE/`.
+- **Synchronized Bundle Files:** `firmware.bin` (v121), `bootloader.bin`, `partitions.bin`, `version.txt` (v121) in `FIRMWARE/`.

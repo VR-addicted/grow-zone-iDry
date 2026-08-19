@@ -139,6 +139,7 @@ struct Config {
   char mqtt_user[65] = "";
   char mqtt_pass[65] = "";
   char mqtt_device_name[33] = "";
+  char web_password[33] = "";    // Optional Web UI protection password (empty = open access)
   int mqtt_report_interval = 5; // Publish interval in minutes (1 to 60)
   int display_brightness = 80;  // Display brightness percentage (0 to 100%)
   int wifi_tx_power =
@@ -927,6 +928,8 @@ bool loadConfiguration() {
           sizeof(sysConfig.mqtt_pass));
   strlcpy(sysConfig.mqtt_device_name, doc["mqtt_device_name"] | "",
           sizeof(sysConfig.mqtt_device_name));
+  strlcpy(sysConfig.web_password, doc["web_password"] | "",
+          sizeof(sysConfig.web_password));
   sysConfig.mqtt_report_interval = doc["mqtt_report_interval"] | 5;
   sysConfig.display_brightness = doc["display_brightness"] | 80;
   sysConfig.wifi_tx_power = doc["wifi_tx_power"] | 52;
@@ -963,6 +966,7 @@ bool saveConfiguration() {
   doc["mqtt_user"] = sysConfig.mqtt_user;
   doc["mqtt_pass"] = sysConfig.mqtt_pass;
   doc["mqtt_device_name"] = sysConfig.mqtt_device_name;
+  doc["web_password"] = sysConfig.web_password;
   doc["mqtt_report_interval"] = sysConfig.mqtt_report_interval;
   doc["display_brightness"] = sysConfig.display_brightness;
   doc["wifi_tx_power"] = sysConfig.wifi_tx_power;
@@ -1797,6 +1801,24 @@ void generateUniqueSSID() {
   apSSID = "IDRY26-" + last6;
 }
 
+bool isWebAuthenticated() {
+  if (strlen(sysConfig.web_password) == 0) return true;
+  String pass = server.arg("pass");
+  if (pass.length() == 0) {
+    pass = server.header("X-Web-Pass");
+  }
+  return (strcmp(pass.c_str(), sysConfig.web_password) == 0);
+}
+
+void handleApiAuth() {
+  String pass = server.arg("pass");
+  if (strlen(sysConfig.web_password) == 0 || strcmp(pass.c_str(), sysConfig.web_password) == 0) {
+    server.send(200, "application/json", "{\"status\":\"ok\",\"authenticated\":true}");
+  } else {
+    server.send(401, "application/json", "{\"status\":\"error\",\"message\":\"Passwort falsch\"}");
+  }
+}
+
 // REST API for Real-time monitor updates
 void handleGetData() {
   JsonDocument doc;
@@ -1811,6 +1833,11 @@ void handleGetData() {
       isHeadless ? "Headless (Kein Display)" : (isTFTMode ? "TFT (ILI9488 / ILI9341)" : "e-Paper (Waveshare GxEPD2)");
   doc["mode"] = doc["display_mode"];
   doc["wifi_ssid"] = sysConfig.wifi_ssid; // Send SSID for client-side use
+
+  bool authRequired = (strlen(sysConfig.web_password) > 0);
+  bool isAuthenticated = isWebAuthenticated();
+  doc["web_auth_required"] = authRequired;
+  doc["web_authenticated"] = isAuthenticated;
 
   // MQTT configuration and state details
   bool mqtt_configured = (strlen(sysConfig.mqtt_server) > 0);
@@ -1867,6 +1894,15 @@ void handleGetData() {
   potis["raw_calculated_rh"] = (float)round(rawCalculatedRh * 10.0f) / 10.0f;
   potis["effective_target_rh"] = effectiveTargetRh;
 
+  doc["poti_a"] = potiAVal;
+  doc["poti_b"] = potiBVal;
+  doc["poti_c"] = potiCVal;
+  doc["target_vpd"] = targetVpdVal;
+  doc["effective_target_rh"] = effectiveTargetRh;
+  doc["rotor_position"] = rotorPosition;
+  doc["servo_angle"] = currentServoAngle;
+  doc["bypass_active"] = bypassModeActive;
+
   bool isSlaveConnected =
       (sysConfig.espnow_role == 2 && lastEspNowRxTime != 0 &&
        (millis() - lastEspNowRxTime <= 5000));
@@ -1874,39 +1910,11 @@ void handleGetData() {
   doc["dry_strategy"] =
       isSlaveConnected ? remoteMasterDryStrategy : sysConfig.dry_strategy;
   doc["hygro_limit"] = sysConfig.hygro_limit;
-
-  float indoorTempRef = NAN;
-  if (tempSensors[0].active && !isnan(tempSensors[0].temperature)) {
-    indoorTempRef = tempSensors[0].temperature;
-  } else if (tempSensors[1].active && !isnan(tempSensors[1].temperature)) {
-    indoorTempRef = tempSensors[1].temperature;
-  }
-  if (isnan(indoorTempRef)) indoorTempRef = 20.0f;
-  int tempIdxRef = (int)round(indoorTempRef) - 15;
-  if (tempIdxRef < 0) tempIdxRef = 0;
-  if (tempIdxRef > 20) tempIdxRef = 20;
-
-  int calculatedAutoDay = getVpdAutoCurrentDay();
-  float autoTargetVpd = vpdTempMatrix[tempIdxRef][calculatedAutoDay - 1];
-  float autoSvp = calculateSVP(indoorTempRef);
-  float autoTargetRh = (autoSvp > 0.001f) ? ((autoSvp - autoTargetVpd) / autoSvp) * 100.0f : 62.0f;
-
-  doc["vpd_auto_day"] = calculatedAutoDay;
-  doc["vpd_auto_target_vpd"] = autoTargetVpd;
-  doc["vpd_auto_base_vpd"] = vpdTempMatrix[5][calculatedAutoDay - 1]; // 20°C baseline target VPD
-  doc["vpd_auto_target_rh"] = (float)round(autoTargetRh * 10.0f) / 10.0f;
-  doc["indoor_temp_rounded"] = (int)round(indoorTempRef);
-
-  doc["rotor_position"] = rotorPosition;
-  doc["rotor_offset"] = potiCVal;
-  doc["rssi"] = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
+  doc["vpd_auto_day"] = getVpdAutoCurrentDay();
   doc["espnow_role"] = sysConfig.espnow_role;
+  doc["espnow_channel"] = sysConfig.espnow_channel;
   doc["espnow_peer_mac"] = sysConfig.espnow_peer_mac;
-  doc["espnow_channel"] =
-      (sysConfig.espnow_role == 1)
-          ? (WiFi.status() == WL_CONNECTED ? WiFi.channel() : 1)
-          : (isPairingActive ? currentPairingChannel
-                             : sysConfig.espnow_channel);
+
   long lastSeenMs = -1;
   if (sysConfig.espnow_role == 1) {
     lastSeenMs = (lastEspNowTxSuccessTime == 0)
@@ -1938,18 +1946,20 @@ void handleGetData() {
   doc["max_alloc_heap"] = ESP.getMaxAllocHeap();
   doc["log_level"] = sysConfig.log_level;
 
-  JsonArray logsArr = doc["sys_logs"].to<JsonArray>();
-  int logStart = (appLogCount < APP_LOG_BUFFER_SIZE) ? 0 : appLogHead;
-  for (int i = 0; i < appLogCount; i++) {
-    int idx = (logStart + i) % APP_LOG_BUFFER_SIZE;
-    logsArr.add(appLogBuffer[idx].text);
-  }
+  if (!authRequired || isAuthenticated) {
+    JsonArray logsArr = doc["sys_logs"].to<JsonArray>();
+    int logStart = (appLogCount < APP_LOG_BUFFER_SIZE) ? 0 : appLogHead;
+    for (int i = 0; i < appLogCount; i++) {
+      int idx = (logStart + i) % APP_LOG_BUFFER_SIZE;
+      logsArr.add(appLogBuffer[idx].text);
+    }
 
-  JsonArray remoteLogsArr = doc["remote_sys_logs"].to<JsonArray>();
-  int rLogStart = (remoteAppLogCount < APP_LOG_BUFFER_SIZE) ? 0 : remoteAppLogHead;
-  for (int i = 0; i < remoteAppLogCount; i++) {
-    int idx = (rLogStart + i) % APP_LOG_BUFFER_SIZE;
-    remoteLogsArr.add(remoteAppLogBuffer[idx].text);
+    JsonArray remoteLogsArr = doc["remote_sys_logs"].to<JsonArray>();
+    int rLogStart = (remoteAppLogCount < APP_LOG_BUFFER_SIZE) ? 0 : remoteAppLogHead;
+    for (int i = 0; i < remoteAppLogCount; i++) {
+      int idx = (rLogStart + i) % APP_LOG_BUFFER_SIZE;
+      remoteLogsArr.add(remoteAppLogBuffer[idx].text);
+    }
   }
 
   String jsonResponse;
@@ -2488,6 +2498,19 @@ void handlePortalRoot() {
                 </details>
             </div>
         </div>
+
+        <!-- Protected UI Login Card -->
+        <div id="login-card" class="card" style="display:none; border:1px solid rgba(129, 140, 248, 0.4); background:rgba(30, 41, 59, 0.7); text-align:center; padding:22px; margin-bottom:20px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5);">
+            <div style="font-size:28px; margin-bottom:6px;">🔒</div>
+            <div style="font-size:15px; font-weight:bold; color:#818cf8; margin-bottom:6px;">Webinterface geschützt</div>
+            <p style="font-size:12.5px; color:#cbd5e1; margin-bottom:16px;">Für erweiterte Log-Konsolen &amp; Einstellungen bitte Anmelden:</p>
+            <div style="display:flex; gap:10px; justify-content:center; max-width:380px; margin:0 auto;">
+                <input type="password" id="login-pass-input" placeholder="Passwort eingeben..." onkeypress="if(event.key==='Enter') performUiLogin()" style="flex:1; padding:9px 12px; background:rgba(15,23,42,0.8); border:1px solid rgba(255,255,255,0.2); border-radius:8px; color:white; font-size:13px; outline:none;">
+                <button type="button" onclick="performUiLogin()" style="background:linear-gradient(135deg, #4f46e5 0%, #3b82f6 100%); border:none; color:white; padding:9px 18px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:13px; box-shadow:0 4px 12px rgba(79,70,229,0.3); transition:all 0.2s;">Anmelden</button>
+            </div>
+            <div id="login-err-msg" style="display:none; color:#f87171; font-size:12px; margin-top:10px; font-weight:bold;">Passwort falsch!</div>
+        </div>
+
         <div class="card">
             <div class="card-title">System Status</div>
             <div class="value-row"><span>IP-Adresse:</span><span class="val" id="sys-ip">--</span></div>
@@ -2540,7 +2563,7 @@ void handlePortalRoot() {
             <span id="footer-text">iDRY26 v1.)rawhtml" +
         String(localFirmwareVersion) +
         R"rawhtml( - (bench: <span id="footer-bench" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> loops/s | heap: <span id="footer-heap" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> KB | alloc: <span id="footer-alloc" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> KB)</span>
-            <a href="/settings" style="color: #818cf8; text-decoration: none; display: inline-flex; align-items: center; gap: 5px; font-weight: 600; padding: 6px 12px; background: rgba(129, 140, 248, 0.1); border-radius: 8px; border: 1px solid rgba(129, 140, 248, 0.2); transition: all 0.2s;">
+            <a href="/settings" id="footer-settings-link" style="color: #818cf8; text-decoration: none; display: inline-flex; align-items: center; gap: 5px; font-weight: 600; padding: 6px 12px; background: rgba(129, 140, 248, 0.1); border-radius: 8px; border: 1px solid rgba(129, 140, 248, 0.2); transition: all 0.2s;">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l-.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
                 Einstellungen
             </a>
@@ -2685,10 +2708,34 @@ void handlePortalRoot() {
         let latestData = null;
         const vpdAutoProfileJS = [0.70, 0.72, 0.74, 0.76, 0.78, 0.80, 0.81, 0.82, 0.83, 0.84, 0.85, 0.85, 0.85, 0.85];
 
+        function performUiLogin() {
+            let passInput = document.getElementById('login-pass-input');
+            let passVal = passInput ? passInput.value : '';
+            fetch('/api/auth?pass=' + encodeURIComponent(passVal))
+                .then(r => r.json())
+                .then(d => {
+                    if (d.status === 'ok') {
+                        sessionStorage.setItem('idry_web_pass', passVal);
+                        let errEl = document.getElementById('login-err-msg');
+                        if (errEl) errEl.style.display = 'none';
+                        updateData();
+                    } else {
+                        let errEl = document.getElementById('login-err-msg');
+                        if (errEl) errEl.style.display = 'block';
+                    }
+                })
+                .catch(err => console.error(err));
+        }
+
         function setDryStrategy(mode, limit, day) {
+            if (latestData && latestData.web_auth_required && !latestData.web_authenticated) {
+                alert("🔒 Webinterface ist geschützt. Bitte zuerst Passwort eingeben.");
+                return;
+            }
             currentDryStrategy = mode;
             if (limit) currentHygroLimit = limit;
-            let url = '/api/settings/dry_strategy?mode=' + mode + '&limit=' + currentHygroLimit;
+            let savedPass = sessionStorage.getItem('idry_web_pass') || '';
+            let url = '/api/settings/dry_strategy?mode=' + mode + '&limit=' + currentHygroLimit + '&pass=' + encodeURIComponent(savedPass);
             if (day) url += '&day=' + day;
             fetch(url, { method: 'POST' })
                 .then(r => r.json())
@@ -3134,13 +3181,32 @@ void handlePortalRoot() {
         }
 
         function updateData() {
-            fetchWithTimeout('/api/data', { timeout: 1000 })
+            let savedPass = sessionStorage.getItem('idry_web_pass') || '';
+            fetchWithTimeout('/api/data?pass=' + encodeURIComponent(savedPass), { timeout: 1000 })
                 .then(response => {
                     if (!response.ok) throw new Error("Connection lost");
                     return response.json();
                 })
                 .then(data => {
                     latestData = data;
+
+                    let loginCard = document.getElementById('login-card');
+                    let settingsLink = document.getElementById('footer-settings-link');
+                    let localLogs = document.getElementById('details-logs-local');
+                    let remoteLogs = document.getElementById('details-logs-remote');
+
+                    if (data.web_auth_required && !data.web_authenticated) {
+                        if (loginCard) loginCard.style.display = 'block';
+                        if (settingsLink) settingsLink.style.display = 'none';
+                        if (localLogs) localLogs.style.display = 'none';
+                        if (remoteLogs) remoteLogs.style.display = 'none';
+                    } else {
+                        if (loginCard) loginCard.style.display = 'none';
+                        if (settingsLink) settingsLink.style.display = 'inline-flex';
+                        if (localLogs) localLogs.style.display = 'block';
+                        if (remoteLogs) remoteLogs.style.display = 'block';
+                    }
+
                     let titleText = data.device_name;
                     let docTitle = data.device_name;
                     if (data.espnow_role === 1) {
@@ -4336,6 +4402,16 @@ void handlePortalSave() {
 }
 
 void handleSettingsPage() {
+  if (!isWebAuthenticated()) {
+    server.send(401, "text/html",
+                "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Zugriff geschützt</title>"
+                "<style>body{background:#0f172a;color:white;text-align:center;padding-top:100px;font-family:sans-serif;}</style></head>"
+                "<body><div style='background:#1e293b;padding:30px;border-radius:15px;display:inline-block;'>"
+                "<h1 style='color:#f87171;margin-bottom:15px;'>🔒 Webinterface geschützt</h1>"
+                "<p style='color:#cbd5e1;margin-bottom:20px;'>Für den Zugriff auf die Einstellungen ist eine Anmeldung im Dashboard erforderlich.</p>"
+                "<a href='/' style='color:#38bdf8;'>Zurück zum Dashboard</a></div></body></html>");
+    return;
+  }
   bool hasLocalSensor = (detectedTempSensors > 0) ||
                         (tempSensors[0].active || tempSensors[1].active);
   String html = R"rawhtml(
@@ -4513,6 +4589,15 @@ void handleSettingsPage() {
     html += " selected";
   html += R"rawhtml(>8.5 dBm (Minimum)</option>
                     </select>
+                </div>
+                <div class="form-group">
+                    <label for="web_password">Webinterface Passwort (Optional)</label>
+                    <input type="password" name="web_password" id="web_password" value=")rawhtml";
+  if (strlen(sysConfig.web_password) > 0) {
+    html += "********";
+  }
+  html += R"rawhtml(" placeholder="passwort eintragen">
+                    <span class="hint-text">Freilassen für freien Lesezugriff. Sobald ein Passwort eingetragen ist, schützt es Konsolen &amp; Einstellungen.</span>
                 </div>
             </div>
 
@@ -5105,6 +5190,7 @@ void handleSettingsPage() {
 void handleSettingsSave() {
   String ssid = server.arg("wifi_ssid");
   String pass = server.arg("wifi_pass");
+  String web_pass = server.arg("web_password");
   String mqtt_server = server.arg("mqtt_server");
   int mqtt_port = server.arg("mqtt_port").toInt();
   String mqtt_user = server.arg("mqtt_user");
@@ -5127,6 +5213,12 @@ void handleSettingsSave() {
   // empty/disabled field
   if (esp_peer_mac.length() == 0 && strlen(sysConfig.espnow_peer_mac) > 0) {
     esp_peer_mac = String(sysConfig.espnow_peer_mac);
+  }
+
+  // Handle web_password masked input
+  String targetWebPass = String(sysConfig.web_password);
+  if (web_pass != "********") {
+    targetWebPass = web_pass;
   }
 
   if (interval < 1)
@@ -5156,6 +5248,7 @@ void handleSettingsSave() {
   bool hasChanges =
       (strcmp(sysConfig.wifi_ssid, ssid.c_str()) != 0 ||
        strcmp(sysConfig.wifi_pass, pass.c_str()) != 0 ||
+       strcmp(sysConfig.web_password, targetWebPass.c_str()) != 0 ||
        strcmp(sysConfig.mqtt_server, mqtt_server.c_str()) != 0 ||
        sysConfig.mqtt_port != mqtt_port ||
        strcmp(sysConfig.mqtt_user, mqtt_user.c_str()) != 0 ||
@@ -5183,6 +5276,7 @@ void handleSettingsSave() {
   if (hasChanges) {
     strlcpy(sysConfig.wifi_ssid, ssid.c_str(), sizeof(sysConfig.wifi_ssid));
     strlcpy(sysConfig.wifi_pass, pass.c_str(), sizeof(sysConfig.wifi_pass));
+    strlcpy(sysConfig.web_password, targetWebPass.c_str(), sizeof(sysConfig.web_password));
     strlcpy(sysConfig.mqtt_server, mqtt_server.c_str(),
             sizeof(sysConfig.mqtt_server));
     sysConfig.mqtt_port = (mqtt_port > 0) ? mqtt_port : 1883;
@@ -5647,6 +5741,16 @@ void checkGithubUpdateAsync(bool force) {
 }
 
 void handleFirmwarePage() {
+  if (!isWebAuthenticated()) {
+    server.send(401, "text/html",
+                "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Zugriff geschützt</title>"
+                "<style>body{background:#0f172a;color:white;text-align:center;padding-top:100px;font-family:sans-serif;}</style></head>"
+                "<body><div style='background:#1e293b;padding:30px;border-radius:15px;display:inline-block;'>"
+                "<h1 style='color:#f87171;margin-bottom:15px;'>🔒 Webinterface geschützt</h1>"
+                "<p style='color:#cbd5e1;margin-bottom:20px;'>Für den Zugriff auf das Firmware Update ist eine Anmeldung im Dashboard erforderlich.</p>"
+                "<a href='/' style='color:#38bdf8;'>Zurück zum Dashboard</a></div></body></html>");
+    return;
+  }
   checkGithubUpdateAsync(true);
   int onlineVersion = cachedOnlineVersion;
   String html = R"rawhtml(
@@ -6258,6 +6362,7 @@ void startCaptivePortal() {
 
   server.on("/", handlePortalRoot);
   server.on("/save", handlePortalSave);
+  server.on("/api/auth", handleApiAuth);
   server.on("/api/data", handleGetData);
   server.on("/api/history", handleGetHistory);
   server.on("/settings", handleSettingsPage);
@@ -6699,6 +6804,7 @@ void setup() {
 
     // Web Server Routes Init
     server.on("/", handlePortalRoot);
+    server.on("/api/auth", handleApiAuth);
     server.on("/api/data", handleGetData);
     server.on("/api/history", handleGetHistory);
     server.on("/settings", handleSettingsPage);
