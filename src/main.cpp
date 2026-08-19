@@ -161,6 +161,8 @@ struct Config {
   int vpd_auto_day = 1;         // Active day index for VPD AUTO mode (1 to 14)
   unsigned long vpd_auto_start_time = 0; // Timestamp when active day was set
   int log_level = 3;            // Log Level: 1 = Status/Telemetry, 2 = Warn/Alarm, 3 = Verbose Debug (Default Level 3)
+  int purge_interval_min = 240; // Purge interval in minutes (0 = disabled, 10 to 1440 min)
+  int purge_duration_sec = 30;   // Purge opening duration in seconds (10 to 600 sec)
 };
 
 // --- T-PIPE LIVE SYSTEM LOGGING ARCHITECTURE ---
@@ -352,6 +354,9 @@ void sendEspNowLogLine(const char* logLine) {
 unsigned long lastEspNowRxTime = 0;
 unsigned long lastEspNowTxSuccessTime = 0;
 unsigned long connectedSince = 0;
+unsigned long lastPurgeTimestamp = 0;
+bool isPurgeActive = false;
+unsigned long purgeStartMs = 0;
 static unsigned long lastWifiAttemptTime = 0;
 bool isPairingActive = false;
 unsigned long pairingStartTime = 0;
@@ -947,6 +952,8 @@ bool loadConfiguration() {
   sysConfig.vpd_auto_day = doc["vpd_auto_day"] | 1;
   sysConfig.vpd_auto_start_time = doc["vpd_auto_start_time"] | 0;
   sysConfig.log_level = doc["log_level"] | 3;
+  sysConfig.purge_interval_min = doc["purge_interval_min"] | 240;
+  sysConfig.purge_duration_sec = doc["purge_duration_sec"] | 30;
 
   Serial.println("[LittleFS] Configuration successfully loaded.");
   return true;
@@ -982,6 +989,8 @@ bool saveConfiguration() {
   doc["vpd_auto_day"] = sysConfig.vpd_auto_day;
   doc["vpd_auto_start_time"] = sysConfig.vpd_auto_start_time;
   doc["log_level"] = sysConfig.log_level;
+  doc["purge_interval_min"] = sysConfig.purge_interval_min;
+  doc["purge_duration_sec"] = sysConfig.purge_duration_sec;
 
   // Compute and embed CRC32 checksum
   uint32_t crcVal = calculateConfigCRC(doc);
@@ -1655,12 +1664,14 @@ void updateServoRamping(bool updateTarget = false) {
         // Virtual switch at bottom end (60/60 mode only): Rigorously closed (0% opening)
         rotorPosition = 0.0f;
         bypassModeActive = false;
+        isPurgeActive = false;
       } else if (sysConfig.dry_strategy == 0 && potiAVal >= 71.0f) {
         // Virtual switch at top end (60/60 mode only): Rigorously open (100% opening)
         rotorPosition = 100.0f;
         bypassModeActive = false;
+        isPurgeActive = false;
       } else {
-        // Normal closed-loop sensor-servo control algorithm (50% to 70%)
+        // Normal closed-loop sensor-servo control algorithm
         float hum_inside = NAN;
         float hum_outside = NAN;
 
@@ -1680,7 +1691,41 @@ void updateServoRamping(bool updateTarget = false) {
           hum_outside = NAN; // No outside sensor available
         }
 
-        if (!isnan(hum_inside)) {
+        // Stoßlüftungs-Timer (Purge Ventilation) State Machine
+        if (sysConfig.purge_interval_min > 0) {
+          unsigned long intervalMs = sysConfig.purge_interval_min * 60000UL;
+          unsigned long durationMs = sysConfig.purge_duration_sec * 1000UL;
+          if (lastPurgeTimestamp == 0) {
+            lastPurgeTimestamp = millis();
+          }
+
+          if (isPurgeActive) {
+            if (millis() - purgeStartMs >= durationMs) {
+              isPurgeActive = false;
+              lastPurgeTimestamp = millis();
+              addAppLogEx(1, "[Purge] Stoßlüften BEENDET nach %ds.", sysConfig.purge_duration_sec);
+            }
+          } else {
+            if (millis() - lastPurgeTimestamp >= intervalMs) {
+              float activeTargetRh = (sysConfig.dry_strategy != 0) ? effectiveTargetRh : potiAVal;
+              if (!isnan(hum_inside) && hum_inside < activeTargetRh) {
+                lastPurgeTimestamp = millis();
+                addAppLogEx(1, "[Purge] Stoßlüften ÜBERSPRUNGEN: Innen-Feuchte (%.1f%%) liegt unter Sollwert (%.1f%%).", hum_inside, activeTargetRh);
+              } else {
+                isPurgeActive = true;
+                purgeStartMs = millis();
+                addAppLogEx(1, "[Purge] Stoßlüften AKTIV! Rotor auf 100%% für %ds.", sysConfig.purge_duration_sec);
+              }
+            }
+          }
+        } else {
+          isPurgeActive = false;
+        }
+
+        if (isPurgeActive) {
+          rotorPosition = 100.0f;
+          bypassModeActive = false;
+        } else if (!isnan(hum_inside)) {
           float activeTargetRh =
               (sysConfig.dry_strategy != 0) ? effectiveTargetRh : potiAVal;
 
@@ -1807,16 +1852,47 @@ bool isWebAuthenticated() {
   if (pass.length() == 0) {
     pass = server.header("X-Web-Pass");
   }
+  if (pass.length() == 0 && server.hasHeader("Cookie")) {
+    String cookie = server.header("Cookie");
+    int idx = cookie.indexOf("idry_pass=");
+    if (idx != -1) {
+      int endIdx = cookie.indexOf(";", idx);
+      if (endIdx == -1) endIdx = cookie.length();
+      pass = cookie.substring(idx + 10, endIdx);
+      pass.trim();
+    }
+  }
   return (strcmp(pass.c_str(), sysConfig.web_password) == 0);
 }
 
 void handleApiAuth() {
   String pass = server.arg("pass");
   if (strlen(sysConfig.web_password) == 0 || strcmp(pass.c_str(), sysConfig.web_password) == 0) {
+    if (strlen(sysConfig.web_password) > 0) {
+      server.sendHeader("Set-Cookie", "idry_pass=" + pass + "; Path=/; Max-Age=86400");
+    }
     server.send(200, "application/json", "{\"status\":\"ok\",\"authenticated\":true}");
   } else {
     server.send(401, "application/json", "{\"status\":\"error\",\"message\":\"Passwort falsch\"}");
   }
+}
+
+void handlePurgeApi() {
+  if (!isWebAuthenticated()) {
+    server.send(401, "application/json", "{\"status\":\"error\",\"message\":\"Passwort erforderlich.\"}");
+    return;
+  }
+  if (server.hasArg("interval")) {
+    sysConfig.purge_interval_min = server.arg("interval").toInt();
+  }
+  if (server.hasArg("duration")) {
+    sysConfig.purge_duration_sec = server.arg("duration").toInt();
+  }
+  saveConfiguration();
+  lastPurgeTimestamp = millis();
+  isPurgeActive = false;
+  addAppLogEx(1, "[Config] Stoßlüften aktualisiert: Intervall=%d min, Dauer=%d sec.", sysConfig.purge_interval_min, sysConfig.purge_duration_sec);
+  server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
 
 // REST API for Real-time monitor updates
@@ -1911,6 +1987,25 @@ void handleGetData() {
       isSlaveConnected ? remoteMasterDryStrategy : sysConfig.dry_strategy;
   doc["hygro_limit"] = sysConfig.hygro_limit;
   doc["vpd_auto_day"] = getVpdAutoCurrentDay();
+  doc["purge_interval_min"] = sysConfig.purge_interval_min;
+  doc["purge_duration_sec"] = sysConfig.purge_duration_sec;
+  doc["purge_active"] = isPurgeActive;
+
+  long purgeRemainingSec = 0;
+  if (sysConfig.purge_interval_min > 0) {
+    if (isPurgeActive) {
+      long elapsed = (long)((millis() - purgeStartMs) / 1000UL);
+      purgeRemainingSec = (long)sysConfig.purge_duration_sec - elapsed;
+      if (purgeRemainingSec < 0) purgeRemainingSec = 0;
+    } else {
+      long intervalSec = (long)sysConfig.purge_interval_min * 60L;
+      long elapsed = (long)((millis() - lastPurgeTimestamp) / 1000UL);
+      purgeRemainingSec = intervalSec - elapsed;
+      if (purgeRemainingSec < 0) purgeRemainingSec = 0;
+    }
+  }
+  doc["purge_remaining_sec"] = purgeRemainingSec;
+
   doc["espnow_role"] = sysConfig.espnow_role;
   doc["espnow_channel"] = sysConfig.espnow_channel;
   doc["espnow_peer_mac"] = sysConfig.espnow_peer_mac;
@@ -2389,6 +2484,61 @@ void handlePortalRoot() {
                         <canvas id="cv-rotor"></canvas>
                     </div>
                 </details>
+                <div style="margin-top: 15px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 12px;">
+                    <div style="font-size: 11px; font-weight: bold; text-transform: uppercase; color: #94a3b8; letter-spacing: 0.5px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+                        <span>⏳ Stoßlüftungs-Timer</span>
+                        <span id="purge-badge" style="font-size: 10.5px; font-family: monospace; font-weight: bold; padding: 2px 6px; border-radius: 4px; background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3);">Aus</span>
+                    </div>
+                    
+                    <!-- 2.5x Enlarged & Centered Sanduhr SVG -->
+                    <div id="hourglass-container" style="width: 70px; height: 105px; margin: 10px auto 14px auto; position: relative;">
+                        <svg viewBox="0 0 60 100" width="100%" height="100%">
+                            <path d="M 10 5 L 50 5 L 33 48 C 31 50, 31 50, 33 52 L 50 95 L 10 95 L 27 52 C 29 50, 29 50, 27 48 Z" fill="none" stroke="#64748b" stroke-width="3" stroke-linejoin="round"/>
+                            <polygon id="sand-top" points="14,10 46,10 30,46" fill="#38bdf8" style="transform-origin: 30px 46px; transition: transform 0.5s ease;"/>
+                            <line id="sand-stream" x1="30" y1="50" x2="30" y2="92" stroke="#38bdf8" stroke-width="2.5" stroke-linecap="round" style="opacity: 0; transition: opacity 0.3s;"/>
+                            <polygon id="sand-bottom" points="30,58 46,92 14,92" fill="#38bdf8" style="transform-origin: 30px 92px; transition: transform 0.5s ease;"/>
+                        </svg>
+                    </div>
+
+                    <!-- Dual Dropdown Selectors Below Sanduhr -->
+                    <div style="display: flex; gap: 10px; margin-top: 4px;">
+                        <div style="flex: 1;">
+                            <label style="font-size: 10px; color: #94a3b8; display: block; margin-bottom: 4px; text-align: center; font-weight: 600;">Intervall:</label>
+                            <select id="purge-interval-select" onchange="onPurgeSettingChange()" style="width: 100%; padding: 5px 6px; background: rgba(15,23,42,0.8); border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; color: white; font-size: 11.5px; outline: none; text-align: center;">
+                                <option value="0">Aus</option>
+                                <option value="10">10 min</option>
+                                <option value="20">20 min</option>
+                                <option value="30">30 min</option>
+                                <option value="45">45 min</option>
+                                <option value="60">60 min</option>
+                                <option value="120">120 min</option>
+                                <option value="180">180 min</option>
+                                <option value="240">240 min</option>
+                                <option value="300">300 min</option>
+                                <option value="600">600 min</option>
+                                <option value="720">720 min</option>
+                                <option value="1440">1440 min</option>
+                            </select>
+                        </div>
+                        <div style="flex: 1;">
+                            <label style="font-size: 10px; color: #94a3b8; display: block; margin-bottom: 4px; text-align: center; font-weight: 600;">Dauer:</label>
+                            <select id="purge-duration-select" onchange="onPurgeSettingChange()" style="width: 100%; padding: 5px 6px; background: rgba(15,23,42,0.8); border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; color: white; font-size: 11.5px; outline: none; text-align: center;">
+                                <option value="10">10 sec</option>
+                                <option value="20">20 sec</option>
+                                <option value="30">30 sec</option>
+                                <option value="45">45 sec</option>
+                                <option value="60">60 sec</option>
+                                <option value="90">90 sec</option>
+                                <option value="120">120 sec</option>
+                                <option value="180">180 sec</option>
+                                <option value="240">240 sec</option>
+                                <option value="300">300 sec</option>
+                                <option value="450">450 sec</option>
+                                <option value="600">600 sec</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
             </div>
             <div class="card" id="espnow-card" style="display:none;">
                 <div class="card-title">ESPNOW</div>
@@ -2716,6 +2866,7 @@ void handlePortalRoot() {
                 .then(d => {
                     if (d.status === 'ok') {
                         sessionStorage.setItem('idry_web_pass', passVal);
+                        document.cookie = "idry_pass=" + encodeURIComponent(passVal) + "; path=/; max-age=86400";
                         let errEl = document.getElementById('login-err-msg');
                         if (errEl) errEl.style.display = 'none';
                         updateData();
@@ -2744,6 +2895,27 @@ void handlePortalRoot() {
                         updateData();
                     }
                 }).catch(e => console.error("Dry Strategy save error", e));
+        }
+
+        function onPurgeSettingChange() {
+            if (latestData && latestData.web_auth_required && !latestData.web_authenticated) {
+                alert("🔒 Webinterface ist geschützt. Bitte zuerst Passwort eingeben.");
+                let intSel = document.getElementById('purge-interval-select');
+                let durSel = document.getElementById('purge-duration-select');
+                if (intSel && latestData) intSel.value = latestData.purge_interval_min !== undefined ? latestData.purge_interval_min : 240;
+                if (durSel && latestData) durSel.value = latestData.purge_duration_sec !== undefined ? latestData.purge_duration_sec : 30;
+                return;
+            }
+            let intVal = document.getElementById('purge-interval-select').value;
+            let durVal = document.getElementById('purge-duration-select').value;
+            let savedPass = sessionStorage.getItem('idry_web_pass') || '';
+            fetch('/api/settings/purge?interval=' + intVal + '&duration=' + durVal + '&pass=' + encodeURIComponent(savedPass), { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status === 'ok') {
+                        updateData();
+                    }
+                }).catch(e => console.error("Purge setting save error", e));
         }
 
         let currentVpdAutoActiveDay = 1;
@@ -3202,9 +3374,19 @@ void handlePortalRoot() {
                         if (remoteLogs) remoteLogs.style.display = 'none';
                     } else {
                         if (loginCard) loginCard.style.display = 'none';
-                        if (settingsLink) settingsLink.style.display = 'inline-flex';
+                        if (settingsLink) {
+                            settingsLink.style.display = 'inline-flex';
+                            settingsLink.href = "/settings?pass=" + encodeURIComponent(savedPass);
+                        }
+                        let otaBtn = document.getElementById('ota-update-btn');
+                        if (otaBtn) {
+                            otaBtn.href = "/firmware?pass=" + encodeURIComponent(savedPass);
+                        }
                         if (localLogs) localLogs.style.display = 'block';
                         if (remoteLogs) remoteLogs.style.display = 'block';
+                        if (savedPass) {
+                            document.cookie = "idry_pass=" + encodeURIComponent(savedPass) + "; path=/; max-age=86400";
+                        }
                     }
 
                     let titleText = data.device_name;
@@ -3469,6 +3651,86 @@ void handlePortalRoot() {
                     const m = document.getElementById('luna');
                     if (m) m.style.backgroundColor = '#191b28';
                     setMoon(data.rotor_position, data.espnow_role === 2);
+
+                    // Update Purge Timer & Sanduhr animation
+                    let purgeIntSel = document.getElementById('purge-interval-select');
+                    let purgeDurSel = document.getElementById('purge-duration-select');
+                    if (purgeIntSel && document.activeElement !== purgeIntSel) {
+                        purgeIntSel.value = data.purge_interval_min !== undefined ? data.purge_interval_min : 240;
+                    }
+                    if (purgeDurSel && document.activeElement !== purgeDurSel) {
+                        purgeDurSel.value = data.purge_duration_sec !== undefined ? data.purge_duration_sec : 30;
+                    }
+
+                    let purgeBadge = document.getElementById('purge-badge');
+                    let sandTop = document.getElementById('sand-top');
+                    let sandStream = document.getElementById('sand-stream');
+                    let sandBottom = document.getElementById('sand-bottom');
+
+                    if (data.purge_interval_min === 0) {
+                        if (purgeBadge) {
+                            purgeBadge.innerText = "Aus";
+                            purgeBadge.style.color = "#94a3b8";
+                            purgeBadge.style.background = "rgba(255,255,255,0.05)";
+                            purgeBadge.style.borderColor = "rgba(255,255,255,0.1)";
+                        }
+                        if (sandTop) sandTop.style.transform = "scaleY(0)";
+                        if (sandBottom) sandBottom.style.transform = "scaleY(0)";
+                        if (sandStream) sandStream.style.opacity = "0";
+                    } else if (data.purge_active) {
+                        // ACTIVE PURGE (100% AUF) -> RED WARN SAND!
+                        let remaining = data.purge_remaining_sec !== undefined ? data.purge_remaining_sec : 0;
+                        let totalDur = data.purge_duration_sec || 30;
+                        let pct = Math.max(0, Math.min(1, remaining / totalDur));
+                        
+                        if (purgeBadge) {
+                            purgeBadge.innerText = "🔥 100% AUF (" + remaining + "s)";
+                            purgeBadge.style.color = "#f87171";
+                            purgeBadge.style.background = "rgba(248, 113, 113, 0.2)";
+                            purgeBadge.style.borderColor = "rgba(248, 113, 113, 0.4)";
+                        }
+                        if (sandTop) {
+                            sandTop.setAttribute("fill", "#f87171");
+                            sandTop.style.transform = "scaleY(" + pct + ")";
+                        }
+                        if (sandStream) {
+                            sandStream.setAttribute("stroke", "#f87171");
+                            sandStream.style.opacity = "1";
+                        }
+                        if (sandBottom) {
+                            sandBottom.setAttribute("fill", "#f87171");
+                            sandBottom.style.transform = "scaleY(" + (1 - pct) + ")";
+                        }
+                    } else {
+                        // NORMAL COUNTDOWN -> HELLBLAUER SAND!
+                        let remaining = data.purge_remaining_sec !== undefined ? data.purge_remaining_sec : 0;
+                        let totalIntSec = (data.purge_interval_min || 240) * 60;
+                        let pct = Math.max(0, Math.min(1, remaining / totalIntSec));
+                        
+                        let h = Math.floor(remaining / 3600);
+                        let m = Math.floor((remaining % 3600) / 60);
+                        let s = remaining % 60;
+                        let timeStr = "In " + (h > 0 ? (h + "h " + (m < 10 ? "0" : "") + m + "m") : (m + ":" + (s < 10 ? "0" : "") + s));
+
+                        if (purgeBadge) {
+                            purgeBadge.innerText = timeStr;
+                            purgeBadge.style.color = "#38bdf8";
+                            purgeBadge.style.background = "rgba(56, 189, 248, 0.15)";
+                            purgeBadge.style.borderColor = "rgba(56, 189, 248, 0.3)";
+                        }
+                        if (sandTop) {
+                            sandTop.setAttribute("fill", "#38bdf8");
+                            sandTop.style.transform = "scaleY(" + pct + ")";
+                        }
+                        if (sandStream) {
+                            sandStream.setAttribute("stroke", "#38bdf8");
+                            sandStream.style.opacity = "1";
+                        }
+                        if (sandBottom) {
+                            sandBottom.setAttribute("fill", "#38bdf8");
+                            sandBottom.style.transform = "scaleY(" + (1 - pct) + ")";
+                        }
+                    }
 
                     // Update ESP-NOW card status dynamically
                     let espnowCard = document.getElementById('espnow-card');
@@ -6360,6 +6622,9 @@ void startCaptivePortal() {
 
   dnsServer.start(53, "*", WiFi.softAPIP());
 
+  const char* headerKeys[] = {"Cookie", "X-Web-Pass"};
+  server.collectHeaders(headerKeys, 2);
+
   server.on("/", handlePortalRoot);
   server.on("/save", handlePortalSave);
   server.on("/api/auth", handleApiAuth);
@@ -6370,6 +6635,7 @@ void startCaptivePortal() {
   server.on("/settings/reset", handleSettingsReset);
   server.on("/api/espnow/pair", handleEspNowPairApi);
   server.on("/api/espnow/buzzer_test", handleBuzzerTestApi);
+  server.on("/api/settings/purge", handlePurgeApi);
   server.on("/firmware", handleFirmwarePage);
   server.on("/firmware/autoupdate", handleAutoUpdate);
   server.on("/api/firmware/autoupdate_start", handleAutoUpdateApi);
@@ -6803,6 +7069,9 @@ void setup() {
     scanI2C();
 
     // Web Server Routes Init
+    const char* headerKeys[] = {"Cookie", "X-Web-Pass"};
+    server.collectHeaders(headerKeys, 2);
+
     server.on("/", handlePortalRoot);
     server.on("/api/auth", handleApiAuth);
     server.on("/api/data", handleGetData);
@@ -6813,6 +7082,7 @@ void setup() {
     server.on("/api/espnow/pair", handleEspNowPairApi);
     server.on("/api/espnow/buzzer_test", handleBuzzerTestApi);
     server.on("/api/settings/dry_strategy", handleDryStrategyApi);
+    server.on("/api/settings/purge", handlePurgeApi);
     server.on("/api/loglevel", HTTP_POST, handleSetLogLevel);
     server.on("/api/loglevel", HTTP_GET, handleSetLogLevel);
     server.on("/firmware", handleFirmwarePage);
