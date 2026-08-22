@@ -1,6 +1,6 @@
-# Implementation Plan - Smart Live-Advisor, Heuristic Engine & Interactive Speech Bubble (Build v154)
+# Implementation Plan - Smart Live-Advisor, Heuristic Engine & Layout Symmetries (Build v155)
 
-Comprehensive architecture and implementation plan for the Smart Live-Advisor & Grow-Heuristic Ticker Widget on the iDRY-26 Dashboard.
+Comprehensive architecture and implementation plan for the iDRY-26 Dashboard.
 
 ---
 
@@ -37,10 +37,14 @@ Comprehensive architecture and implementation plan for the Smart Live-Advisor & 
 - **Grow Advisor Disclaimer (Index 20):**
   > *„Dies sind unverbindliche Tipps & Denkanstöße – nimm sie bitte nicht zu bierernst! Die Automatik regelt so gut es geht, aber kein Algorithmus kann dein gärtnerisches Feingefühl ersetzen. Jeder Grow, jedes Zelt und jedes Raumklima ist anders. Sieh die Tipps nicht als Panik-Alarm, sondern als Anregung zum Mitdenken und selber Recherchieren. Keine Gewähr auf dynamische Tipps – Happy Growing! 🌿✌️“*
 
+### 7. Restored MQTT Card Display in Slave Mode (Build v155)
+- Displays MQTT Card symmetrically alongside ESPNOW whenever `data.mqtt_enabled`, `data.espnow_role > 0`, or an ESP-NOW peer MAC is stored in settings.
+- Restores Broker, Status (`connected` / `try to connect` / `disconnected`), and Topic visibility without layout gaps.
+
 ---
 
 ## 🧪 Verification & Release Status
 
 - **PlatformIO Compilation:** `SUCCESS` (Code 0, RAM: 29.6%, Flash: 21.7%).
-- **Firmware Bundle:** `FIRMWARE/firmware.bin` (v154), `bootloader.bin`, `partitions.bin`, `version.txt` (v154).
+- **Firmware Bundle:** `FIRMWARE/firmware.bin` (v155), `bootloader.bin`, `partitions.bin`, `version.txt` (v155).
 - **Documentation:** `README.md`, `agents.md`, `TODO.md`, `walkthrough.md`, and `implementation_plan.md` fully synchronized.

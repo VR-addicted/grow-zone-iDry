@@ -4812,19 +4812,30 @@ void handlePortalRoot() {
 
                     // Update MQTT card status dynamically
                     let mqttCard = document.getElementById('mqtt-card');
-                    if (data.mqtt_enabled) {
+                    let showMqtt = data.mqtt_enabled || data.espnow_role > 0 || (data.espnow_peer_mac && data.espnow_peer_mac.length > 0);
+                    if (showMqtt) {
                         mqttCard.style.display = 'block';
-                        document.getElementById('mqtt-title').innerText = "MQTT " + data.device_name;
-                        document.getElementById('mqtt-broker').innerText = data.mqtt_server + ":" + data.mqtt_port;
+                        document.getElementById('mqtt-title').innerText = "MQTT " + (data.device_name || "IDRY26");
+                        document.getElementById('mqtt-broker').innerText = (data.mqtt_server && data.mqtt_server.length > 0) ? (data.mqtt_server + ":" + data.mqtt_port) : "--";
                         
                         let statusEl = document.getElementById('mqtt-status');
-                        if (data.mqtt_connected) {
-                            statusEl.innerText = "connected";
-                            statusEl.style.color = "#4ade80"; // green
-                        } else {
-                            statusEl.innerText = "try to connect";
-                            statusEl.style.color = "#f87171"; // red
+                        if (statusEl) {
+                            if (data.mqtt_connected) {
+                                statusEl.innerText = "connected";
+                                statusEl.style.color = "#4ade80"; // green
+                            } else if (data.mqtt_server && data.mqtt_server.length > 0) {
+                                statusEl.innerText = "try to connect";
+                                statusEl.style.color = "#f87171"; // red
+                            } else {
+                                statusEl.innerText = "disconnected";
+                                statusEl.style.color = "#f87171"; // red
+                            }
                         }
+                        let topicEl = document.getElementById('mqtt-topic');
+                        if (topicEl) {
+                            topicEl.innerText = data.mqtt_topic || ("idry/" + (data.device_name || "IDRY26") + "/state");
+                        }
+                    } else {
                         mqttCard.style.display = 'none';
                     }
 
