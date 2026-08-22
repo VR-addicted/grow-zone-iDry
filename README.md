@@ -47,31 +47,56 @@ Im Gegensatz zu gewöhnlichen Umluftventilatoren im Trockenzelt (die die Luft nu
 
 ---
 
-## 📷 Galerie & UI-Vorschau
+## 📷 Galerie & Live UI-Vorschau
 
 <div align="center">
 
-### ⚙️ Hardware & Mechanischer Aufbau
+### 🎬 Live-Interaktion & Dynamischer Moduswechsel
 
-| Frontansicht mit Blende | Mechanik & Servosteuerscheibe |
-| :---: | :---: |
-| <img src="PICTURES/iDry24-Front.jpg" width="420" alt="Frontansicht Blende"> | <img src="PICTURES/iDry24-Front_Mechanics.jpg" width="420" alt="Mechanik Servolenkung"> |
+<img src="PICTURES/UI-modes-recording.gif" width="100%" alt="iDry-26 Live Dashboard Interaktion & Modi-Wechsel">
 
-| Rückseite & Verkabelung | Gehäuse & Seitenansicht |
-| :---: | :---: |
-| <img src="PICTURES/iDry24-Back.jpg" width="420" alt="Rückseite Platine"> | <img src="PICTURES/iDry24-Back-angle.jpg" width="420" alt="Winkelansicht Gehäuse"> |
+*Echtzeit-Interaktion in Aktion: Flüssiges Umschalten zwischen 60/60, VPD & 14-Tage VPD AUTO, interaktiver Grow Advisor Live-Ticker mit Info-Modal und verzögerungsfreie Telemetrie.*
 
 <br>
 
-### 🖥️ Web-Interface & Monitoring Dashboard
+### 🖥️ Master Live-Dashboard & Vollständige Settings-Zentrale
 
-| Dual Live Monitor (Master & Slave synchronisiert) | Einstellungen: WLAN, MQTT & ESP-NOW Pairing |
+| 🌟 Master Dashboard (60/60 Modus) | ⚙️ All-in-One Settings-Zentrale |
 | :---: | :---: |
-| <img src="PICTURES/iDry24-Web-UI-Master-Slave-MODE.jpg" width="420" alt="Dual Dashboard Live Monitor"> | <img src="PICTURES/iDry-Web-UI-Settings-1.jpg" width="420" alt="Web UI Network Settings"> |
+| <img src="PICTURES/UI-Master-6060-mode.jpg" width="460" alt="Master Live Dashboard 60/60 Modus"> | <img src="PICTURES/UI-Settings.jpg" width="460" alt="Settings & Odometer Konfigurationsseite"> |
+| **Vollausbau-Dashboard:** Symmetrische Sensor-Paare (Innen/Außen & Licht 1/2), 60-Minuten-Sparklines mit Spike-Detection, Stoßlüftungs-Timer mit animierter Sanduhr, Grow Advisor & duale T-Pipe Live-Konsolen. | **Umfassendes Management:** Neuer Servo-Kilometerzähler mit NVS-Spiegelung, Display-Autodimmer (3s-Entprellung), Buzzer-Test, Watchdogs & 1-Klick GitHub Updates. |
 
-| Einstellungen: Watchdogs & Signalstärke-Balken | Einstellungen: Fail-Safe Schutz & Geräte-Management |
+<br>
+
+### 🔬 Wissenschaftliche VPD-Strategien & 14-Tage-Stufenplan
+
+| 📅 14-Tage VPD AUTO Stufenplan (`VPD AU`) | 🎯 Dynamischer VPD Basis-Modus |
 | :---: | :---: |
-| <img src="PICTURES/iDry-Web-UI-Settings-2.jpg" width="420" alt="Web UI Watchdogs Settings"> | <img src="PICTURES/iDry-Web-UI-Settings-3.jpg" width="420" alt="Web UI Fail Safe Settings"> |
+| <img src="PICTURES/UI-Master-vpd_AU_auto_mode-mode.jpg" width="460" alt="VPD AUTO 14-Tage Stufenplan"> | <img src="PICTURES/UI-Master-vpd_base_mode-mode.jpg" width="460" alt="Dynamischer VPD Basis Modus"> |
+| **Wissenschaftliches Curing:** 21x14 Matrix-Stufenplan (0.70 $\to$ 1.10 kPa) mit leuchtender Tages-Kerzenleiste, dynamischer gelber Ideallinie & zuschaltbarem Hygro-Limit Schimmelschutz. | **Stufenlose Sättigungsdefizit-Regelung:** Wunsch-VPD (0.60–1.40 kPa) direkt auf Poti A mit automatischer Temperatur-Kompensation und Echtzeit-Feuchteberechnung. |
+
+<br>
+
+### 🔒 Sicherheit & Minimaler Headless-Slave-Betrieb
+
+| 🔐 Partieller Web-Passwortschutz | 📡 Minimalistischer Slave-Betrieb |
+| :---: | :---: |
+| <img src="PICTURES/UI-partial-UI-password-lock.jpg" width="460" alt="Partieller Passwortschutz"> | <img src="PICTURES/UI-slave-min-conf-no-display-no-sensors.jpg" width="460" alt="Minimalistischer Slave-Betrieb"> |
+| **Smarte Rechtestufe:** Freier Einblick in Live-Klimadaten, Grow-Tipps und ESP-NOW Logs ohne Login – sensible Hardware- und Netzwerkeinstellungen bleiben sicher gesperrt. | **Headless & Ressourcenschonend:** Schlankes Interface für reine Funk-Aktoren ohne Display/Sensorik mit automatischer MQTT-Telemetrie und sicherem 50%-Notfall-Failsafe. |
+
+<br>
+
+### ⚙️ Hardware & Mechanischer 3D-Druck-Aufbau
+
+| Frontansicht mit Status-Display & Potis | Mechanik mit Zahnrad & Servo-Direktantrieb |
+| :---: | :---: |
+| <img src="PICTURES/iDry24-Front.jpg" width="460" alt="Frontansicht Gehäuse"> | <img src="PICTURES/iDry24-Front_Mechanics.jpg" width="460" alt="Mechanik mit Zahnrad r=27mm"> |
+| **Robuste Gehäusefront:** Schnelle Statuskontrolle via Display und kinderleichte 1-Knob-Bedienung über analoge Drehregler. | **Spielfreier Servo-Antrieb:** Zahnradsegment mit Hebelarm $r=27\text{ mm}$ für feinfühlige, kraftvolle Blendensteuerung. |
+
+| Rückansicht mit I2C-Sensorports | Schrägansicht & Wandmontage |
+| :---: | :---: |
+| <img src="PICTURES/iDry24-Back.jpg" width="460" alt="Rückseite mit Anschlüssen"> | <img src="PICTURES/iDry24-Back-angle.jpg" width="460" alt="Schrägansicht Gehäusemontage"> |
+| **Plug & Play Anschlüsse:** Geschützte Buchsen für Dual-Klimasensoren, Lichtsensoren und zuverlässige Stromversorgung. | **Optimierte Aerodynamik:** Formschlüssige Rohr- und Zeltadapter für 100% hermetische Abdichtung im geschlossenen Zustand. |
 
 </div>
 
