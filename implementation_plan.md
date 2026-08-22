@@ -1,50 +1,54 @@
-# Implementation Plan - Smart Live-Advisor, Heuristic Engine & Layout Symmetries (Build v155)
+# Implementation Plan - Display Backlight Auto-Dimmer, Servo Odometer & Settings Reorganization (Build v163)
 
-Comprehensive architecture and implementation plan for the iDRY-26 Dashboard.
-
----
-
-## 🛠️ Architecture & Delivered Components
-
-### 1. Zero-RAM Chunked PROGMEM HTTP Streaming
-- **Heap RAM Protection:** Eliminates dynamic string allocations (`String html`) for the 50KB dashboard HTML.
-- **PROGMEM Chunking:** HTML is partitioned into `DASHBOARD_HTML_PART1`, `DASHBOARD_HTML_PART2`, and `DASHBOARD_HTML_PART3`.
-- **Chunked HTTP Response:** Handled via `server.setContentLength(CONTENT_LENGTH_UNKNOWN)` and `server.sendContent(...)` using 0 Bytes of dynamic RAM heap to guarantee immunity against truncation or memory crashes.
-
-### 2. Full-Width Header Widget & Non-Stop Seamless Scroller
-- **Placement:** Positioned prominently directly beneath `#device-title`.
-- **Continuous Infinite Looping:** Active report scrolls continuously from right to left (`requestAnimationFrame` at 38px/s). When the text completely leaves the viewport on the left, it wraps seamlessly to the right edge and continues looping non-stop.
-- **Gesture Drag & Swipe:** Pointer events distinguish between horizontal swipe gestures ($> 35\text{px}$) and static clicks/taps ($\le 6\text{px}$).
-
-### 3. Interactive 100% Solid Full-Text Speech Bubble (`#advisor-popup-bubble`)
-- **100% Opaque Pitch-Black Background (`#090d16` & `z-index: 9999`):** Completely eliminates background bleed-through of underlying animated rotor moons, sparklines, or icons.
-- **Full Text Rendering:** Displays the entire diagnostic report, color-coded badge, and timestamp `[HH:MM:SS]` without truncation.
-- **Embedded History Controls:** Contains `◀ Älter` and `Neuer ▶` buttons with a live counter (`X / Total`) and an explicit `✕` close button.
-
-### 4. Navigation Boundary Stops & Dynamic Visibility
-- **No Wrap-Around:** Stays fixed at message index 0 when navigating newer, and stays fixed at the oldest message when navigating older.
-- **Dynamic Button Hiding:**
-  - `Neuer ▶` automatically hides (`visibility: hidden`) when viewing message 1.
-  - `◀ Älter` automatically hides (`visibility: hidden`) when viewing the oldest message.
-
-### 5. 10-Second Discretized Climate Heuristics & Anti-Spam Deduplication
-- **10s Evaluation Cycle:** Evaluates live sensor telemetry every 10 seconds.
-- **Integer Quantization (Anti-Jitter):** Rounds raw sensor floats to whole integer numbers (`Math.round(rF)`, `Math.round(temp)`, `Math.round(rotorPos)`) and $0.1\text{ kPa}$ steps for VPD.
-- **Anti-Spam Ringbuffer Deduplication:** Checks if the report text matches `advisorRingBuffer[0].rawText`. Only genuine climate changes and state transitions generate new ringbuffer entries with fresh timestamps.
-
-### 6. Interactive Info Help System & Grow-Bro Disclaimer (`PANEL_INFOS`)
-- Structured as a fast, sparse dictionary object `{ 0: ..., 20: ... }`.
-- **Grow Advisor Disclaimer (Index 20):**
-  > *„Dies sind unverbindliche Tipps & Denkanstöße – nimm sie bitte nicht zu bierernst! Die Automatik regelt so gut es geht, aber kein Algorithmus kann dein gärtnerisches Feingefühl ersetzen. Jeder Grow, jedes Zelt und jedes Raumklima ist anders. Sieh die Tipps nicht als Panik-Alarm, sondern als Anregung zum Mitdenken und selber Recherchieren. Keine Gewähr auf dynamische Tipps – Happy Growing! 🌿✌️“*
-
-### 7. Restored MQTT Card Display in Slave Mode (Build v155)
-- Displays MQTT Card symmetrically alongside ESPNOW whenever `data.mqtt_enabled`, `data.espnow_role > 0`, or an ESP-NOW peer MAC is stored in settings.
-- Restores Broker, Status (`connected` / `try to connect` / `disconnected`), and Topic visibility without layout gaps.
+Intelligent light-sensor-based display power saving, a persistent wear-leveled Servo Odometer engine with live calibration controls, and an optimized `/settings` panel layout hierarchy.
 
 ---
 
-## 🧪 Verification & Release Status
+## 🛠️ Architecture & Delivered Specifications
 
-- **PlatformIO Compilation:** `SUCCESS` (Code 0, RAM: 29.6%, Flash: 21.7%).
-- **Firmware Bundle:** `FIRMWARE/firmware.bin` (v155), `bootloader.bin`, `partitions.bin`, `version.txt` (v155).
-- **Documentation:** `README.md`, `agents.md`, `TODO.md`, `walkthrough.md`, and `implementation_plan.md` fully synchronized.
+### 1. Display Backlight Auto-Dimmer (TFT Light-Sensor Control)
+- **Sensor Presence Detection:**
+  - If **NO light sensor** (TSL2561) is connected/active: Backlight follows user-configured brightness (0–100%) in Settings.
+  - If **AT LEAST ONE light sensor** is active:
+    - If ANY active sensor reads **$> 200\text{ Lux}$**: Display Backlight turns **ON** at configured brightness (`sysConfig.display_brightness`).
+    - If ALL active sensors read **$\le 200\text{ Lux}$** continuously for **$> 3\text{ seconds}$** (3s debounce filter against temporary shadows): Backlight turns **COMPLETELY OFF ($0\%$)** to prevent room light pollution and conserve power.
+    - Threshold of $200\text{ Lux}$ ensures no recursive feedback loop between TFT backlight and ambient sensor.
+
+### 2. Servo Odometer Engine & Wear-Leveling Persistence
+- **Kinematic Calculation ($r = 27\text{ mm}$ gear radius):**
+  - Arc length per degree: $\Delta d = \frac{\pi \cdot 27\text{ mm}}{180^\circ} \approx 0.00047124\text{ m/deg}$.
+  - Every angular step adds to `servoTotalMeters`.
+  - Nominal 100% lifetime baseline: **$50,000\text{ m}$ ($50\text{ km}$)**.
+  - Lifetime percentage: $\text{Lifetime \%} = \min\left(100.00, \frac{\text{servoTotalMeters}}{50000} \times 100\right)$ (displayed with 2 decimal places, e.g. `1.42 %`).
+- **Dual-Storage Persistence (LittleFS + NVS Mirroring):**
+  - **RAM Caching:** Accumulated in RAM and only committed to Flash once per hour (and only if actual movement occurred).
+  - **Dual Mirroring:**
+    1. Saved in LittleFS (`/config.json`).
+    2. Mirrored to ESP32 NVS partition (`Preferences.h`, namespace `idry_odo`) with Magic Word `0x49445259` (`IDRY`).
+  - **Boot Recovery:** Reads both LittleFS and NVS. If a discrepancy exists (e.g. after a partial flash wipe), the higher valid number wins and re-synchronizes both storage layers.
+
+### 3. Settings UI Panel (`/settings`) & Layout Hierarchy
+- **Optimized Natural Flow:**
+  1. **Wi-Fi Verbindung**
+  2. **MQTT Konfiguration**
+  3. **ESP-NOW Funknetzwerk**
+  4. **Buzzer Test**
+  5. **Servo Laufleistung & Odometer** *(placed directly below Buzzer Test with `ℹ`-Info Button Index 21)*
+  6. **System Status** *(placed directly above System & Anzeige)*
+  7. **System & Anzeige**
+  8. **Save & Back Buttons** *(placed at the bottom of the configuration cards, right above Geräte-Management)*
+  9. **Geräte-Management** (Firmware & OTA, Reboot, Reset)
+- **Live Editable Input Field & Instant Bar Update:**
+  - Typing in the input field calculates and updates the dual-tone blue progress bar (`#0284c7` to `#38bdf8`) and percentage label immediately.
+  - AJAX polling on that input temporarily pauses while editing to prevent input overwriting.
+  - `Ändern` button submits `POST /api/settings/odometer?meters=...`. Setting `0` resets the odometer; entering an existing value restores previous mileage.
+
+### 4. Boot Safety & Network Decoupling
+- ESP-NOW packet streaming (`sendEspNowLogLine`) is guarded by `isEspNowInitialized` to prevent dereferencing uninitialized driver structures during early boot.
+- NVS initialization opens in read-write mode to prevent `nvs_open` errors on fresh boards.
+
+---
+
+## 🧪 Verification & Build Status
+- PlatformIO Build: `SUCCESS` (Code 0, RAM: 29.7%, Flash: 21.9%).
+- Firmware bundle updated in `FIRMWARE/` (v163).

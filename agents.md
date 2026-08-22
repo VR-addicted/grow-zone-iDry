@@ -159,4 +159,28 @@ Do not change SPI, I2C, ADC, or actuator pin assignments:
 * **Integer-Quantized Environmental Heuristics:** Quantizes sensor values to integer rounded steps (`Math.round(...)`) to eliminate floating-point noise and prevent false-positive ringbuffer spamming.
 * **Zero-RAM Chunked HTTP Streaming Architecture:** Splits dashboard HTML into PROGMEM chunks streamed via `server.setContentLength(CONTENT_LENGTH_UNKNOWN)` and `server.sendContent(...)` using 0 Bytes of dynamic RAM heap, preventing string truncation and memory crashes.
 
+---
+
+## Harmonized 2-Column Grid Layout & Sensor Pairing Symmetries
+* **Pair-by-Pair Symmetrical Flow:**
+  - Row 1: Strategy / Potis (Left) & Rotor / Servo (Right).
+  - Row 2: Sensor 1 Innen (Left) & Sensor 2 Außen (Right).
+  - Row 3: Light Sensor 1 (Left) & Light Sensor 2 (Right).
+  - Row 4: VPD Deficit (`#vpd-card`, `grid-column: 1 / -1;`) spanning full width with responsive 2-column flex row on desktop and seamless 1-column collapse on mobile (`< 500px`).
+  - Row 5: ESPNOW (Left) & MQTT Dashboard (Right).
+  - Row 6: System Status (Full Width) with 4h-RSSI sparkline and live log consoles.
+
+---
+
+## Display Backlight Auto-Dimmer & Dual-Storage Servo Odometer Rules
+* **Ambient Light Backlight Control (3s Debounce @ 200 Lux):**
+  - Follows user slider when no light sensor is active.
+  - With light sensor active: turns ON if any sensor $> 200\text{ Lux}$; turns OFF ($0\%$) if all $\le 200\text{ Lux}$ for $> 3\text{ seconds}$.
+* **Dual-Storage Servo Odometer ($r=27\text{ mm}$):**
+  - Metric: $\Delta d = \Delta\theta \times 0.00047124\text{ m}$. Baseline $50\text{ km}$ ($50,000\text{ m}$).
+  - Caches in RAM; flushes hourly to LittleFS (`/config.json`) and NVS (`idry_odo`, magic `0x49445259`) only on movement.
+  - Manual calibration via authenticated `POST /api/settings/odometer?meters=...`.
+
+
+
 

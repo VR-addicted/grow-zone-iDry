@@ -242,6 +242,29 @@ Die Displays teilen sich denselben physischen SPI-Kabelbaum (JST-Stecker am YD-E
 * **Authentischer Grow-Bro Disclaimer (Info-Button `ℹ`):**
   > *„Dies sind unverbindliche Tipps & Denkanstöße – nimm sie bitte nicht zu bierernst! Die Automatik regelt so gut es geht, aber kein Algorithmus kann dein gärtnerisches Feingefühl ersetzen. Jeder Grow, jedes Zelt und jedes Raumklima ist anders. Sieh die Tipps nicht als Panik-Alarm, sondern als Anregung zum Mitdenken und selber Recherchieren. Keine Gewähr auf dynamische Tipps – Happy Growing! 🌿✌️“*
 
+### 10. Harmonisierte 2-Spalten Layout-Symmetrie & Responsive VPD Doppelspalte
+* **Direkter Sensor-Paarvergleich (Reihe für Reihe):**
+  - **Reihe 1:** `Dry Strategy & Potentiometer` (Links) & `Rotor & Servo` (Rechts).
+  - **Reihe 2:** `Sensor 1 (Innen - BME280)` (Links) & `Sensor 2 (Außen - SHT3x)` (Rechts) für schnellen, fehlerfreien Innen/Außen-Klimavergleich.
+  - **Reihe 3:** `TSL2561 (1)` (Links) & `TSL2561 (2)` (Rechts).
+* **Responsive Doppelspalten-Dynamik für VPD (`#vpd-card`):**
+  - Spannt über die volle Rasterbreite (`grid-column: 1 / -1;`), sodass darunter liegende Sensorpaare niemals ungerade versetzt werden.
+  - **Responsive Flex-Dynamik:** Auf Desktop-Bildschirmen werden `VPD Innen` und `VPD Außen` mit ihren 60-Minuten-Sparklines nebeneinander in zwei gleichmäßigen Spalten dargestellt; beim Verkleinern des Browserfensters auf Mobilformat (`< 500px`) bricht das Panel nahtlos und flüssig in eine einspaltige Ansicht um.
+* **Netzwerk & Mesh-Symmetrie:** `ESPNOW` und `MQTT Dashboard` stehen sauber nebeneinander direkt über dem vollflächigen `System Status` Panel.
+
+### 11. Display Backlight Auto-Dimmer & Dual-Storage Servo Odometer
+* **Lichtsensor-gesteuerter Display-Dimmer (TFT):**
+  - **Ohne Lichtsensor:** Normales Dimmverhalten (0–100% über den Slider in den Einstellungen).
+  - **Mit aktivem Lichtsensor (TSL2561):**
+    - Sobald ein Sensor $> 200\text{ Lux}$ misst $\to$ Hintergrundbeleuchtung **EIN** (auf konfigurierter Helligkeit).
+    - Wenn alle Sensoren $\le 200\text{ Lux}$ messen für $> 3\text{ Sekunden}$ (Schatten-Entprellung) $\to$ Hintergrundbeleuchtung **VOLLSTÄNDIG AUS ($0\%$)** gegen Störlicht im Raum.
+* **Präziser Servo-Kilometerzähler & Lebensdauer-Odometer ($r=27\text{ mm}$):**
+  - Bogenmaß-Berechnung: $0.00047124\text{ m}$ pro Grad Drehwinkel bei jeder Klappenbewegung.
+  - $50.000\text{ m}$ ($50\text{ km}$) als 100%-Nennlebensdauer-Basis mit 2 Nachkommastellen (z. B. `1.42 %`).
+  - **Flash-schonendes Caching:** Schreibt nur 1x pro Stunde und nur dann, wenn sich die Klappe bewegt hat.
+  - **Dual-Storage Spiegelung (LittleFS + NVS):** Parallele Sicherung in LittleFS und der ESP32 NVS-Flash-Partition. Beim Booten gewinnt automatisch der höhere gültige Wert (Schutz vor Datenverlust nach Firmware-Flashes).
+  - **Live-Kalibrierung & Reset in Settings:** Beim Eintippen/Fokussieren des Zählerfeldes pausiert das AJAX-Update und ein `Ändern`-Button erscheint zur manuellen Stand-Wiederherstellung oder zum Reset auf `0`.
+
 ---
 
 ## 💻 Bauen & Flashen via PlatformIO

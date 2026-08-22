@@ -14,9 +14,10 @@
 #include <esp_now.h>
 #include <esp_wifi.h>
 
-// OTA Firmware Update Libraries
+// OTA Firmware Update & NVS Preferences Libraries
 #include <HTTPClient.h>
 #include <HTTPUpdate.h>
+#include <Preferences.h>
 #include <Update.h>
 #include <WiFiClientSecure.h>
 
@@ -163,6 +164,7 @@ struct Config {
   int log_level = 3;            // Log Level: 1 = Status/Telemetry, 2 = Warn/Alarm, 3 = Verbose Debug (Default Level 3)
   int purge_interval_min = 240; // Purge interval in minutes (0 = disabled, 10 to 1440 min)
   int purge_duration_sec = 30;   // Purge opening duration in seconds (10 to 600 sec)
+  float servo_total_meters = 0.0f; // Total Servo travel distance in meters (r=27mm)
 };
 
 // --- T-PIPE LIVE SYSTEM LOGGING ARCHITECTURE ---
@@ -258,6 +260,16 @@ bool servoMoving = false;
 bool servoFinishedPending = false;
 unsigned long servoFinishedTime = 0;
 
+// Servo Odometer & Lifetime Tracking Globals (r = 27mm, 0.47124 mm/deg)
+float servoTotalMeters = 0.0f;
+float lastSavedServoMeters = 0.0f;
+unsigned long lastOdometerSaveTime = 0;
+float lastTrackedServoAngle = -1.0f;
+
+// Display Ambient Light Backlight Auto-Dimmer
+unsigned long darknessStartTime = 0;
+bool isDisplayDarkened = false;
+
 // 21x14 Scientific Temperature-VPD Matrix for Temperatures 15°C to 35°C across Days 1 to 14
 const float vpdTempMatrix[21][14] = {
   // 15°C
@@ -330,8 +342,11 @@ uint32_t avgEspNowIntervalMs = 1000;
 uint8_t remoteMasterDryStrategy = 0;
 
 static bool isSendingLogPacket = false;
+static bool isEspNowInitialized = false;
+
 void sendEspNowLogLine(const char* logLine) {
   if (isSendingLogPacket) return;
+  if (!isEspNowInitialized) return;
   if (sysConfig.espnow_role == 0 || strlen(sysConfig.espnow_peer_mac) == 0) return;
 
   uint8_t peerMac[6];
@@ -530,6 +545,44 @@ float calculateSVP(float temp) {
 // Forward declarations
 bool saveConfiguration();
 void initEspNow();
+void saveOdometer(bool force = false);
+
+void loadOdometer() {
+  Preferences prefs;
+  float nvsMeters = 0.0f;
+  if (prefs.begin("idry_odo", false)) { // Open Read-Write to create namespace if missing
+    uint32_t magic = prefs.getUInt("magic", 0);
+    if (magic == 0x49445259) { // "IDRY"
+      nvsMeters = prefs.getFloat("meters", 0.0f);
+    }
+    prefs.end();
+  }
+  float lfsMeters = sysConfig.servo_total_meters;
+  servoTotalMeters = max(lfsMeters, nvsMeters);
+  lastSavedServoMeters = servoTotalMeters;
+  if (fabs(lfsMeters - nvsMeters) > 0.05f) {
+    saveOdometer(true);
+  }
+  Serial.printf("[Odometer] Loaded Servo Laufleistung: %.2f m (%.3f km) [NVS: %.2f m, LittleFS: %.2f m]\n", servoTotalMeters, servoTotalMeters / 1000.0f, nvsMeters, lfsMeters);
+}
+
+void saveOdometer(bool force) {
+  if (!force && (fabs(servoTotalMeters - lastSavedServoMeters) < 0.05f)) {
+    return; // No movement occurred, preserve Flash write cycles!
+  }
+  // 1. Mirror to ESP32 NVS Partition
+  Preferences prefs;
+  if (prefs.begin("idry_odo", false)) { // Read-Write
+    prefs.putUInt("magic", 0x49445259);
+    prefs.putFloat("meters", servoTotalMeters);
+    prefs.end();
+  }
+  // 2. Mirror to LittleFS config.json
+  sysConfig.servo_total_meters = servoTotalMeters;
+  saveConfiguration();
+  lastSavedServoMeters = servoTotalMeters;
+  lastOdometerSaveTime = millis();
+}
 
 void performFactoryReset(const char* sourceTag) {
   addAppLogEx(1, "[System] FACTORY RESET TRIGGERED via %s! Clearing /config.json...", sourceTag);
@@ -789,18 +842,23 @@ static const uint8_t IDRY_PMK[16] = {0x69, 0x44, 0x72, 0x79, 0x32, 0x36,
 
 void initEspNow() {
   if (sysConfig.espnow_role == 0) {
+    isEspNowInitialized = false;
     esp_now_deinit();
     return;
   }
 
   // Safely reset driver before initializing
+  isEspNowInitialized = false;
   esp_now_deinit();
 
   Serial.println("[ESP-NOW] Initializing ESP-NOW...");
   if (esp_now_init() != ESP_OK) {
+    isEspNowInitialized = false;
     Serial.println("[ESP-NOW] Initialization failed!");
     return;
   }
+
+  isEspNowInitialized = true;
 
   // Set 16-byte Primary Master Key (PMK)
   esp_now_set_pmk(IDRY_PMK);
@@ -954,6 +1012,9 @@ bool loadConfiguration() {
   sysConfig.log_level = doc["log_level"] | 3;
   sysConfig.purge_interval_min = doc["purge_interval_min"] | 240;
   sysConfig.purge_duration_sec = doc["purge_duration_sec"] | 30;
+  sysConfig.servo_total_meters = doc["servo_total_meters"] | 0.0f;
+
+  loadOdometer();
 
   Serial.println("[LittleFS] Configuration successfully loaded.");
   return true;
@@ -991,6 +1052,7 @@ bool saveConfiguration() {
   doc["log_level"] = sysConfig.log_level;
   doc["purge_interval_min"] = sysConfig.purge_interval_min;
   doc["purge_duration_sec"] = sysConfig.purge_duration_sec;
+  doc["servo_total_meters"] = sysConfig.servo_total_meters;
 
   // Compute and embed CRC32 checksum
   uint32_t crcVal = calculateConfigCRC(doc);
@@ -1895,6 +1957,23 @@ void handlePurgeApi() {
   server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
 
+void handleOdometerApi() {
+  if (!isWebAuthenticated()) {
+    server.send(401, "application/json", "{\"status\":\"error\",\"message\":\"Nicht autorisiert\"}");
+    return;
+  }
+  if (server.hasArg("meters")) {
+    float newMeters = server.arg("meters").toFloat();
+    if (newMeters < 0.0f) newMeters = 0.0f;
+    servoTotalMeters = newMeters;
+    saveOdometer(true);
+    addAppLogEx(1, "[Odometer] Manually updated Servo total travel: %.2f m (%.3f km)", servoTotalMeters, servoTotalMeters / 1000.0f);
+    server.send(200, "application/json", "{\"status\":\"ok\",\"meters\":" + String(servoTotalMeters, 2) + "}");
+  } else {
+    server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Parameter 'meters' fehlt\"}");
+  }
+}
+
 // REST API for Real-time monitor updates
 void handleGetData() {
   JsonDocument doc;
@@ -2039,6 +2118,9 @@ void handleGetData() {
   doc["fw_version"] = "1." + String(localFirmwareVersion);
   doc["loops_per_sec"] = loopsPerSecond;
   doc["free_heap"] = ESP.getFreeHeap();
+  doc["servo_total_meters"] = (float)round(servoTotalMeters * 100.0f) / 100.0f;
+  float lifetimePct = min(100.0f, (servoTotalMeters / 50000.0f) * 100.0f);
+  doc["servo_lifetime_pct"] = (float)round(lifetimePct * 100.0f) / 100.0f;
   doc["max_alloc_heap"] = ESP.getMaxAllocHeap();
   doc["log_level"] = sysConfig.log_level;
 
@@ -2992,51 +3074,6 @@ void handlePortalRoot() {
                     </div>
                 </div>
             </div>
-            <div class="card" id="espnow-card" style="display:none;">
-                <div class="card-title"><span>ESPNOW</span><span class="info-btn" onclick="toggleInfo(event, 6)" onmouseenter="showInfo(this, 6)" onmouseleave="hideInfo(this)">i</span></div>
-                <div class="value-row"><span>Rolle:</span><span class="val" id="espnow-val-role" style="font-weight: bold; text-transform: uppercase;">--</span></div>
-                <div class="value-row"><span>Verbindung:</span><span class="val" id="espnow-val-conn">--</span></div>
-                <div class="value-row"><span>Protokoll:</span><span class="val" id="espnow-val-pv">--</span></div>
-                <details open class="hist-toggle" id="details-espnow" ontoggle="renderAllCharts()">
-                    <summary>60m Verbindungsausfälle</summary>
-                    <div class="spark-box" onclick="openChartZoom('espnow', 'ESP-NOW Link Loss Verlauf')">
-                        <canvas id="cv-espnow"></canvas>
-                    </div>
-                </details>
-            </div>
-            <div class="card" id="mqtt-card" style="display:none;">
-                <div class="card-title"><span id="mqtt-title">MQTT Dashboard</span><span class="info-btn" onclick="toggleInfo(event, 7)" onmouseenter="showInfo(this, 7)" onmouseleave="hideInfo(this)">i</span></div>
-                <div class="value-row"><span>Broker:</span><span class="val" id="mqtt-broker">--</span></div>
-                <div class="value-row"><span>Status:</span><span class="val" id="mqtt-status">--</span></div>
-                <div class="value-row"><span style="flex-shrink: 0; margin-right: 10px;">Topic:</span><span class="val" id="mqtt-topic" style="font-size:11px; text-align: right; word-break:break-all;">--</span></div>
-                <details open class="hist-toggle" id="details-mqtt" ontoggle="renderAllCharts()">
-                    <summary>60m Broker Ausfälle</summary>
-                    <div class="spark-box" onclick="openChartZoom('mqtt', 'MQTT Link Loss Verlauf')">
-                        <canvas id="cv-mqtt"></canvas>
-                    </div>
-                </details>
-            </div>
-            <div class="card" id="vpd-card" style="display:none;">
-                <div class="card-title"><span>VPD (Sättigungsdefizit)</span><span class="info-btn" onclick="toggleInfo(event, 8)" onmouseenter="showInfo(this, 8)" onmouseleave="hideInfo(this)">i</span></div>
-                <div id="vpd-row-0" style="display:none;">
-                    <div class="value-row"><span>VPD Innen (BME280):</span><span class="val" id="vpd-val-0">--</span></div>
-                    <details open class="hist-toggle" id="details-vpd-0" ontoggle="renderAllCharts()">
-                        <summary>60m Verlauf (VPD Innen)</summary>
-                        <div class="spark-box" onclick="openChartZoom('vpd_0', 'VPD Innen (BME280)')">
-                            <canvas id="cv-vpd-0"></canvas>
-                        </div>
-                    </details>
-                </div>
-                <div id="vpd-row-1" style="display:none; margin-top:12px;">
-                    <div class="value-row"><span>VPD Außen (SHT31):</span><span class="val" id="vpd-val-1">--</span></div>
-                    <details open class="hist-toggle" id="details-vpd-1" ontoggle="renderAllCharts()">
-                        <summary>60m Verlauf (VPD Außen)</summary>
-                        <div class="spark-box" onclick="openChartZoom('vpd_1', 'VPD Außen (SHT31)')">
-                            <canvas id="cv-vpd-1"></canvas>
-                        </div>
-                    </details>
-                </div>
-            </div>
             <div class="card" id="sensor-card-0" style="display:none;">
                 <div class="card-title"><span id="sensor-title-0">Sensor 1</span><span class="info-btn" onclick="toggleInfo(event, 9)" onmouseenter="showInfo(this, 9)" onmouseleave="hideInfo(this)">i</span></div>
                 <div class="value-row"><span>Temperatur:</span><span class="val" id="temp-0">--</span></div>
@@ -3096,6 +3133,53 @@ void handlePortalRoot() {
                     <summary>60m Verlauf (Helligkeit)</summary>
                     <div class="spark-box" onclick="openChartZoom('lux_1', 'TSL2561 (2) Helligkeit')">
                         <canvas id="cv-lux-1"></canvas>
+                    </div>
+                </details>
+            </div>
+            <div class="card" id="vpd-card" style="display:none; grid-column: 1 / -1;">
+                <div class="card-title"><span>VPD (Sättigungsdefizit)</span><span class="info-btn" onclick="toggleInfo(event, 8)" onmouseenter="showInfo(this, 8)" onmouseleave="hideInfo(this)">i</span></div>
+                <div style="display: flex; gap: 15px; flex-wrap: wrap;">
+                    <div id="vpd-row-0" style="display:none; flex: 1; min-width: 240px;">
+                        <div class="value-row"><span>VPD Innen (BME280):</span><span class="val" id="vpd-val-0">--</span></div>
+                        <details open class="hist-toggle" id="details-vpd-0" ontoggle="renderAllCharts()">
+                            <summary>60m Verlauf (VPD Innen)</summary>
+                            <div class="spark-box" onclick="openChartZoom('vpd_0', 'VPD Innen (BME280)')">
+                                <canvas id="cv-vpd-0"></canvas>
+                            </div>
+                        </details>
+                    </div>
+                    <div id="vpd-row-1" style="display:none; flex: 1; min-width: 240px;">
+                        <div class="value-row"><span>VPD Außen (SHT31):</span><span class="val" id="vpd-val-1">--</span></div>
+                        <details open class="hist-toggle" id="details-vpd-1" ontoggle="renderAllCharts()">
+                            <summary>60m Verlauf (VPD Außen)</summary>
+                            <div class="spark-box" onclick="openChartZoom('vpd_1', 'VPD Außen (SHT31)')">
+                                <canvas id="cv-vpd-1"></canvas>
+                            </div>
+                        </details>
+                    </div>
+                </div>
+            </div>
+            <div class="card" id="espnow-card" style="display:none;">
+                <div class="card-title"><span>ESPNOW</span><span class="info-btn" onclick="toggleInfo(event, 6)" onmouseenter="showInfo(this, 6)" onmouseleave="hideInfo(this)">i</span></div>
+                <div class="value-row"><span>Rolle:</span><span class="val" id="espnow-val-role" style="font-weight: bold; text-transform: uppercase;">--</span></div>
+                <div class="value-row"><span>Verbindung:</span><span class="val" id="espnow-val-conn">--</span></div>
+                <div class="value-row"><span>Protokoll:</span><span class="val" id="espnow-val-pv">--</span></div>
+                <details open class="hist-toggle" id="details-espnow" ontoggle="renderAllCharts()">
+                    <summary>60m Verbindungsausfälle</summary>
+                    <div class="spark-box" onclick="openChartZoom('espnow', 'ESP-NOW Link Loss Verlauf')">
+                        <canvas id="cv-espnow"></canvas>
+                    </div>
+                </details>
+            </div>
+            <div class="card" id="mqtt-card" style="display:none;">
+                <div class="card-title"><span id="mqtt-title">MQTT Dashboard</span><span class="info-btn" onclick="toggleInfo(event, 7)" onmouseenter="showInfo(this, 7)" onmouseleave="hideInfo(this)">i</span></div>
+                <div class="value-row"><span>Broker:</span><span class="val" id="mqtt-broker">--</span></div>
+                <div class="value-row"><span>Status:</span><span class="val" id="mqtt-status">--</span></div>
+                <div class="value-row"><span style="flex-shrink: 0; margin-right: 10px;">Topic:</span><span class="val" id="mqtt-topic" style="font-size:11px; text-align: right; word-break:break-all;">--</span></div>
+                <details open class="hist-toggle" id="details-mqtt" ontoggle="renderAllCharts()">
+                    <summary>60m Broker Ausfälle</summary>
+                    <div class="spark-box" onclick="openChartZoom('mqtt', 'MQTT Link Loss Verlauf')">
+                        <canvas id="cv-mqtt"></canvas>
                     </div>
                 </details>
             </div>
@@ -6178,6 +6262,66 @@ void handleSettingsPage() {
                 </div>
             </div>
 
+            <!-- Servo Laufleistung & Odometer Panel -->
+            <div class="settings-card">
+                <div class="section-title">
+                    <span style="display: flex; align-items: center; gap: 8px;">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                        Servo Laufleistung &amp; Odometer
+                    </span>
+                    <span class="info-btn" onclick="toggleInfo(event, 21)" onmouseenter="showInfo(this, 21)" onmouseleave="hideInfo(this)">i</span>
+                </div>
+                <div class="value-row" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 13px;">
+                    <span>Gesamtweg:</span>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <button type="button" id="odo-save-btn" onclick="submitOdometerChange()" style="display:none; padding: 3px 8px; background: #0284c7; border: 1px solid #38bdf8; color: white; border-radius: 6px; font-size: 11px; font-weight: bold; cursor: pointer;">Ändern</button>
+                        <input type="number" step="0.01" min="0" id="odo-input" onfocus="pauseOdoUpdate(true)" oninput="onOdoInputChanged()" onblur="setTimeout(() => pauseOdoUpdate(false), 5000)" style="width: 110px; padding: 4px 8px; background: rgba(15,23,42,0.8); border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; color: #38bdf8; font-family: monospace; font-size: 13px; font-weight: 600; text-align: right; outline: none;">
+                        <span id="odo-unit" style="font-family: monospace; color: #94a3b8; font-size: 12px;">m</span>
+                    </div>
+                </div>
+                <div style="margin-bottom: 8px;">
+                    <div style="display: flex; justify-content: space-between; font-size: 11px; color: #94a3b8; margin-bottom: 4px;">
+                        <span>Lebensdauer-Status (50 km Basis):</span>
+                        <span id="odo-pct-label" style="font-family: monospace; color: #38bdf8; font-weight: bold;">0.00 %</span>
+                    </div>
+                    <div style="width: 100%; height: 10px; background: rgba(15,23,42,0.8); border-radius: 5px; border: 1px solid rgba(255,255,255,0.08); overflow: hidden;">
+                        <div id="odo-bar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #0284c7 0%, #38bdf8 100%); transition: width 0.4s ease;"></div>
+                    </div>
+                </div>
+                <span class="hint-text" style="font-size: 11px; color: #64748b; margin-top: 6px; display: block;">
+                    Berechnung: Hebelarm r=27mm (0.471 mm/&deg;) &bull; Nenn-Lebensdauer: 50.000 m (Dual-Storage Flash &amp; NVS)
+                </span>
+            </div>
+
+            <!-- System Status Panel -->
+            <div class="settings-card">
+                <div class="section-title">
+                    <span style="display: flex; align-items: center; gap: 8px;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg> System Status</span>
+                    <span class="info-btn" onclick="toggleInfo(event, 18)" onmouseenter="showInfo(this, 18)" onmouseleave="hideInfo(this)">i</span>
+                </div>
+                <div class="value-row" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 13px;">
+                    <span>IP-Adresse:</span>
+                    <span class="val" id="sys-ip" style="font-family: monospace; color: #38bdf8; font-weight: 600;">--</span>
+                </div>
+                <div class="value-row" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 13px;">
+                    <span>Anzeige-Modus:</span>
+                    <span class="val" id="sys-mode" style="font-family: monospace; font-weight: 600;">--</span>
+                </div>
+                <div class="value-row" style="display: flex; justify-content: space-between; align-items: center; font-size: 13px;">
+                    <span style="display: flex; align-items: center; gap: 10px;">
+                        Signalstärke RSSI:
+                        <div style="width: 50px; height: 8px; background: rgba(255,255,255,0.15); border-radius: 4px; overflow: hidden; display: inline-block;">
+                            <div id="sys-rssi-bar" style="width: 0%; height: 100%; transition: width 0.3s, background-color 0.3s; background: #ef4444;"></div>
+                        </div>
+                    </span>
+                    <span class="val" id="sys-rssi" style="font-family: monospace; color: #38bdf8; font-weight: 600;">--</span>
+                </div>
+                <div class="value-row" style="display: flex; justify-content: space-between; align-items: center; margin-top: 12px; font-size: 13px;">
+                    <span>Watchdog reset weekly:</span>
+                    <span class="val" id="settings-wd-reset" style="font-family: monospace; font-weight: 600;">--</span>
+                </div>
+            </div>
+
             <!-- Systemeinstellungen Panel -->
             <div class="settings-card">
                 <div class="section-title">
@@ -6228,35 +6372,6 @@ void handleSettingsPage() {
                 <a href="/" class="btn btn-back">Back</a>
             </div>
         </form>
-
-        <!-- System Status Panel -->
-        <div class="settings-card" style="margin-top: 25px;">
-            <div class="section-title">
-                <span style="display: flex; align-items: center; gap: 8px;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg> System Status</span>
-                <span class="info-btn" onclick="toggleInfo(event, 18)" onmouseenter="showInfo(this, 18)" onmouseleave="hideInfo(this)">i</span>
-            </div>
-            <div class="value-row" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 13px;">
-                <span>IP-Adresse:</span>
-                <span class="val" id="sys-ip" style="font-family: monospace; color: #38bdf8; font-weight: 600;">--</span>
-            </div>
-            <div class="value-row" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 13px;">
-                <span>Anzeige-Modus:</span>
-                <span class="val" id="sys-mode" style="font-family: monospace; font-weight: 600;">--</span>
-            </div>
-            <div class="value-row" style="display: flex; justify-content: space-between; align-items: center; font-size: 13px;">
-                <span style="display: flex; align-items: center; gap: 10px;">
-                    Signalstärke RSSI:
-                    <div style="width: 50px; height: 8px; background: rgba(255,255,255,0.15); border-radius: 4px; overflow: hidden; display: inline-block;">
-                        <div id="sys-rssi-bar" style="width: 0%; height: 100%; transition: width 0.3s, background-color 0.3s; background: #ef4444;"></div>
-                    </div>
-                </span>
-                <span class="val" id="sys-rssi" style="font-family: monospace; color: #38bdf8; font-weight: 600;">--</span>
-            </div>
-            <div class="value-row" style="display: flex; justify-content: space-between; align-items: center; margin-top: 12px; font-size: 13px;">
-                <span>Watchdog reset weekly:</span>
-                <span class="val" id="settings-wd-reset" style="font-family: monospace; font-weight: 600;">--</span>
-            </div>
-        </div>
 
         <!-- Geräte-Management Panel -->
         <div class="settings-card" style="margin-top: 25px;">
@@ -6312,7 +6427,10 @@ void handleSettingsPage() {
             18: "<b>System Status</b><br>Diagnoseübersicht mit aktueller IP-Adresse, Display-Modus, RSSI-Signalstärke und automatischem Wochen-Reboot.",
             
             // [19] Geräte-Management
-            19: "<b>Geräte-Management</b><br>Firmware & OTA-Update, Geräte-Neustart, Werkseinstellungen und vollständiger System-Reset."
+            19: "<b>Geräte-Management</b><br>Firmware & OTA-Update, Geräte-Neustart, Werkseinstellungen und vollständiger System-Reset.",
+            
+            // [21] Servo Laufleistung & Odometer
+            21: "<b>Servo Laufleistung &amp; Odometer</b><br>Präziser Wegstreckenzähler für den Lüftungsrotor (Hebelarm r=27mm). Berechnet kumulierte Fahrstrecke und Lebensdauer (100% = 50 km). Gesichert über Dual-Storage (LittleFS + NVS)."
         };
 
         let activeBubble = null;
@@ -6618,7 +6736,85 @@ void handleSettingsPage() {
                             otaBtn.classList.remove('pulse-update');
                         }
                     }
+
+                    // Update Servo Odometer card
+                    const odoInput = document.getElementById('odo-input');
+                    const odoBar = document.getElementById('odo-bar');
+                    const odoPctLabel = document.getElementById('odo-pct-label');
+                    if (odoInput && !isOdoEditing && document.activeElement !== odoInput) {
+                        const meters = (data.servo_total_meters !== undefined) ? data.servo_total_meters : 0;
+                        odoInput.value = Number(meters).toFixed(2);
+                        const pct = (data.servo_lifetime_pct !== undefined) ? data.servo_lifetime_pct : ((meters / 50000.0) * 100.0);
+                        if (odoBar) odoBar.style.width = Math.min(100, Math.max(0, pct)).toFixed(2) + "%";
+                        if (odoPctLabel) odoPctLabel.innerText = Number(pct).toFixed(2) + " %";
+                    }
                 }).catch(err => console.error(err));
+        }
+
+        let isOdoEditing = false;
+        let odoPauseTimeout = null;
+
+        function pauseOdoUpdate(isFocus) {
+            if (isFocus) {
+                isOdoEditing = true;
+                if (odoPauseTimeout) clearTimeout(odoPauseTimeout);
+            } else {
+                odoPauseTimeout = setTimeout(() => {
+                    isOdoEditing = false;
+                    const saveBtn = document.getElementById('odo-save-btn');
+                    if (saveBtn) saveBtn.style.display = 'none';
+                }, 3000);
+            }
+        }
+
+        function onOdoInputChanged() {
+            isOdoEditing = true;
+            const saveBtn = document.getElementById('odo-save-btn');
+            if (saveBtn) saveBtn.style.display = 'inline-block';
+
+            const odoInput = document.getElementById('odo-input');
+            const odoBar = document.getElementById('odo-bar');
+            const odoPctLabel = document.getElementById('odo-pct-label');
+            if (odoInput) {
+                let val = parseFloat(odoInput.value) || 0;
+                let pct = (val / 50000.0) * 100.0;
+                if (pct < 0) pct = 0;
+                if (pct > 100) pct = 100;
+                if (odoBar) odoBar.style.width = pct.toFixed(2) + "%";
+                if (odoPctLabel) odoPctLabel.innerText = pct.toFixed(2) + " %";
+            }
+        }
+
+        function submitOdometerChange() {
+            const odoInput = document.getElementById('odo-input');
+            if (!odoInput) return;
+            const newMeters = parseFloat(odoInput.value) || 0;
+            
+            fetch('/api/settings/odometer?meters=' + encodeURIComponent(newMeters), { method: 'POST' })
+                .then(r => r.json())
+                .then(res => {
+                    if (res.status === 'ok') {
+                        const saveBtn = document.getElementById('odo-save-btn');
+                        if (saveBtn) saveBtn.style.display = 'none';
+                        isOdoEditing = false;
+                        odoInput.blur();
+
+                        let m = (res.meters !== undefined) ? res.meters : newMeters;
+                        odoInput.value = Number(m).toFixed(2);
+                        let pct = (m / 50000.0) * 100.0;
+                        if (pct < 0) pct = 0;
+                        if (pct > 100) pct = 100;
+                        const odoBar = document.getElementById('odo-bar');
+                        const odoPctLabel = document.getElementById('odo-pct-label');
+                        if (odoBar) odoBar.style.width = pct.toFixed(2) + "%";
+                        if (odoPctLabel) odoPctLabel.innerText = pct.toFixed(2) + " %";
+
+                        pollEspNowStatus();
+                    } else {
+                        alert("Fehler beim Speichern: " + (res.message || "Nicht autorisiert"));
+                    }
+                })
+                .catch(err => alert("Netzwerkfehler: " + err));
         }
 
         // Initialize and poll
@@ -8294,6 +8490,7 @@ void setup() {
     server.on("/api/espnow/buzzer_test", handleBuzzerTestApi);
     server.on("/api/settings/dry_strategy", handleDryStrategyApi);
     server.on("/api/settings/purge", handlePurgeApi);
+    server.on("/api/settings/odometer", handleOdometerApi);
     server.on("/api/loglevel", HTTP_POST, handleSetLogLevel);
     server.on("/api/loglevel", HTTP_GET, handleSetLogLevel);
     server.on("/firmware", handleFirmwarePage);
@@ -8581,6 +8778,17 @@ void loop() {
       lastServoWriteTime = millis();
       lastWrittenAngle = currentServoAngle;
 
+      // Track Odometer distance: r = 27mm -> 0.0004712389 m/deg
+      if (lastTrackedServoAngle < 0.0f) {
+        lastTrackedServoAngle = currentServoAngle;
+      } else {
+        float angleDiff = fabs(currentServoAngle - lastTrackedServoAngle);
+        if (angleDiff >= 0.05f) {
+          servoTotalMeters += (angleDiff * 0.0004712389f);
+          lastTrackedServoAngle = currentServoAngle;
+        }
+      }
+
       // Convert angle (0 to 180 deg) to duty cycle ticks (500us to 2500us pulse
       // width)
       float pulseWidthUs = 500.0f + (currentServoAngle / 180.0f) * 2000.0f;
@@ -8593,6 +8801,13 @@ void loop() {
     servoFinishedPending = false;
     ledcWrite(SERVO_LEDC_CHANNEL, 0);
     Serial.println("[Servo] Idle. Detached power to stop buzzing.");
+  }
+
+  // Periodic 1-Hour Flush for Servo Odometer (Dual-Storage NVS & LittleFS, only if moved)
+  static unsigned long lastHourlyOdoSave = 0;
+  if (millis() - lastHourlyOdoSave >= 3600000UL) {
+    lastHourlyOdoSave = millis();
+    saveOdometer(false);
   }
 
   // Connect / Maintain Wi-Fi Connection & Active Link Watchdog
@@ -8796,6 +9011,51 @@ void loop() {
     if (isHeadless) {
       // Headless Mode: skip drawing to display to conserve power/speed
     } else if (isTFTMode) {
+      // --- Ambient Light Sensor Display Backlight Control (3s Debounce @ 200 Lux) ---
+      bool hasActiveLightSensor = false;
+      bool ambientLightPresent = false;
+      for (int i = 0; i < 2; i++) {
+        if (lightSensors[i].active) {
+          hasActiveLightSensor = true;
+          if (!isnan(lightSensors[i].lux) && lightSensors[i].lux > 200.0f) {
+            ambientLightPresent = true;
+            break;
+          }
+        }
+      }
+
+      uint8_t targetUserBrightness = sysConfig.display_brightness;
+
+      if (!hasActiveLightSensor) {
+        // No light sensor -> follow user config directly
+        darknessStartTime = 0;
+        isDisplayDarkened = false;
+        uint8_t rawBrightness = (uint8_t)round(pow(targetUserBrightness / 100.0, 2.2) * 255.0);
+        tft.setBrightness(rawBrightness);
+      } else {
+        // Light sensor present
+        if (ambientLightPresent) {
+          darknessStartTime = 0;
+          if (isDisplayDarkened) {
+            isDisplayDarkened = false;
+            addAppLogEx(3, "[Display] Ambient light detected (>200 Lux). Backlight ON (%d%%).", targetUserBrightness);
+          }
+          uint8_t rawBrightness = (uint8_t)round(pow(targetUserBrightness / 100.0, 2.2) * 255.0);
+          tft.setBrightness(rawBrightness);
+        } else {
+          // Below 200 Lux -> start/check 3s debounce timer
+          if (darknessStartTime == 0) {
+            darknessStartTime = millis();
+          } else if (millis() - darknessStartTime >= 3000) {
+            if (!isDisplayDarkened) {
+              isDisplayDarkened = true;
+              addAppLogEx(3, "[Display] Darkness confirmed (<=200 Lux for 3s). Backlight OFF (0%%).");
+              tft.setBrightness(0);
+            }
+          }
+        }
+      }
+
       // --- NATIVE TFT INTERFACE (Outlined UI with font size 1 for compact
       // display) ---
       tft.startWrite();
