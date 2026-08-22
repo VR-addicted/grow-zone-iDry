@@ -23,6 +23,8 @@ This document tracks planned future features, Home Assistant integrations, and a
   - Direct markdown reading/writing of Obsidian Vault notes.
   - Optional MCP (Model Context Protocol) Obsidian server integration (`mcp-server-obsidian`) to sync project logs, technical docs, and growth journals directly into Obsidian notes.
 
----
+### 4. telegram bot connecten...
 
+
+  
 *Document created for iDRY-26 joint pair-programming roadmap.*

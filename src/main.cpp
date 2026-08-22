@@ -2284,15 +2284,15 @@ void handlePortalRoot() {
       pageTitle += " Dashboard";
 
     // Show Real-time Sensor Dashboard
-    String html =
-        R"rawhtml(
+    const char* DASHBOARD_HTML_PART1 = R"rawhtml(
 <!DOCTYPE html>
 <html lang="de">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>)rawhtml" +
-        pageTitle + R"rawhtml(</title>
+    <title>)rawhtml";
+
+    const char* DASHBOARD_HTML_PART2 = R"rawhtml(</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         body {
@@ -2323,7 +2323,82 @@ void handlePortalRoot() {
             border-radius: 12px;
             padding: 20px;
         }
-        .card-title { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: #94a3b8; margin-bottom: 12px; font-weight: bold; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 5px; }
+        .card-title { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: #94a3b8; margin-bottom: 12px; font-weight: bold; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 5px; display: flex; justify-content: space-between; align-items: center; position: relative; }
+        .info-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 15px;
+            height: 15px;
+            border-radius: 50%;
+            background: rgba(56, 189, 248, 0.12);
+            border: 1px solid rgba(56, 189, 248, 0.35);
+            color: #38bdf8;
+            font-size: 11px;
+            font-family: serif;
+            font-style: italic;
+            font-weight: bold;
+            cursor: pointer;
+            user-select: none;
+            line-height: 1;
+            transition: all 0.2s ease;
+            flex-shrink: 0;
+            margin-left: auto;
+        }
+        .info-btn:hover, .info-btn.active {
+            background: rgba(56, 189, 248, 0.3);
+            border-color: #38bdf8;
+            color: #ffffff;
+            box-shadow: 0 0 8px rgba(56, 189, 248, 0.6);
+        }
+        .info-bubble {
+            position: absolute;
+            top: calc(100% + 6px);
+            right: 0;
+            width: 280px;
+            max-width: 85vw;
+            background: #090d16;
+            border: 1px solid rgba(56, 189, 248, 0.6);
+            border-radius: 12px;
+            padding: 12px 14px;
+            color: #e2e8f0;
+            font-size: 12px;
+            font-weight: normal;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            text-transform: none;
+            letter-spacing: normal;
+            line-height: 1.5;
+            box-shadow: 0 20px 45px -5px rgba(0, 0, 0, 0.95), 0 0 20px rgba(56, 189, 248, 0.3);
+            z-index: 9999;
+            pointer-events: auto;
+            animation: info-fade-in 0.2s ease-out;
+        }
+        .info-bubble::before {
+            content: '';
+            position: absolute;
+            top: -8.5px;
+            right: 4px;
+            width: 0;
+            height: 0;
+            border-left: 7px solid transparent;
+            border-right: 7px solid transparent;
+            border-bottom: 8.5px solid rgba(56, 189, 248, 0.6);
+        }
+        .info-bubble::after {
+            content: '';
+            position: absolute;
+            top: -7px;
+            right: 5px;
+            width: 0;
+            height: 0;
+            border-left: 6px solid transparent;
+            border-right: 6px solid transparent;
+            border-bottom: 7px solid #090d16;
+        }
+        @keyframes info-fade-in {
+            from { opacity: 0; transform: translateY(-4px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
         .value-row { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 15px; }
         .value-row:last-child { margin-bottom: 0; }
         .val { font-weight: 600; color: #38bdf8; }
@@ -2404,15 +2479,376 @@ void handlePortalRoot() {
             100% { box-shadow: 0 0 3px rgba(56,189,248,0.4); border-color: #38bdf8; background-color: #38bdf8; }
         }
         .vpd-candle-active { animation: vpd-candle-pulse 1.8s infinite ease-in-out; }
+        @keyframes sand-stream-glow {
+            0% { filter: drop-shadow(0 0 2.0px rgba(2, 132, 199, 0.75)); opacity: 0.90; }
+            50% { filter: drop-shadow(0 0 3.6px rgba(14, 165, 233, 0.95)); opacity: 1.0; }
+            100% { filter: drop-shadow(0 0 2.0px rgba(2, 132, 199, 0.75)); opacity: 0.90; }
+        }
+        @keyframes sand-stream-color {
+            0% { stroke: #1ea2dc; stroke-width: 2.3px; }
+            50% { stroke: #58c7f9; stroke-width: 2.5px; }
+            100% { stroke: #1ea2dc; stroke-width: 2.3px; }
+        }
+        @keyframes sand-stream-glow-red {
+            0% { filter: drop-shadow(0 0 2.0px rgba(185, 28, 28, 0.75)); opacity: 0.90; }
+            50% { filter: drop-shadow(0 0 3.6px rgba(239, 68, 68, 0.95)); opacity: 1.0; }
+            100% { filter: drop-shadow(0 0 2.0px rgba(185, 28, 28, 0.75)); opacity: 0.90; }
+        }
+        @keyframes sand-stream-color-red {
+            0% { stroke: #e65c5c; stroke-width: 2.3px; }
+            50% { stroke: #fa8282; stroke-width: 2.5px; }
+            100% { stroke: #e65c5c; stroke-width: 2.3px; }
+        }
+        .sand-stream-flowing-blue {
+            animation: sand-stream-glow 310ms infinite ease-in-out, sand-stream-color 190ms infinite ease-in-out;
+        }
+        .sand-stream-flowing-red {
+            animation: sand-stream-glow-red 310ms infinite ease-in-out, sand-stream-color-red 190ms infinite ease-in-out;
+        }
+        .drum-picker-wrapper {
+            position: relative;
+            height: 84px;
+            width: 100%;
+            overflow: hidden;
+            background: linear-gradient(180deg, #0e1526 0%, #172238 25%, #243452 50%, #172238 75%, #0e1526 100%);
+            border-radius: 8px;
+            border: 1px solid rgba(56, 189, 248, 0.35);
+            box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.5), 0 4px 12px rgba(0, 0, 0, 0.35);
+        }
+        .drum-picker {
+            height: 100%;
+            overflow-y: scroll;
+            scroll-snap-type: y mandatory;
+            scrollbar-width: none;
+            -ms-overflow-style: none;
+            padding: 28px 0;
+            box-sizing: border-box;
+            cursor: grab;
+        }
+        .drum-picker:active { cursor: grabbing; }
+        .drum-picker::-webkit-scrollbar { display: none; }
+        .drum-item {
+            height: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            scroll-snap-align: center;
+            font-size: 11px;
+            color: #cbd5e1;
+            font-weight: 500;
+            user-select: none;
+            transition: all 0.15s ease;
+            transform: scale(0.92, 0.65);
+            opacity: 0.85;
+        }
+        .drum-item.top-neighbor, .drum-item.bottom-neighbor {
+            transform: scale(0.92, 0.65);
+            opacity: 0.85;
+            color: #cbd5e1;
+        }
+        .drum-item.active {
+            color: #38bdf8;
+            font-weight: 800;
+            font-size: 13.5px;
+            transform: scale(1.0, 1.0);
+            opacity: 1.0;
+            text-shadow: 0 0 10px rgba(56, 189, 248, 0.7);
+        }
+        .drum-overlay {
+            position: absolute;
+            top: 26px;
+            left: 0;
+            right: 0;
+            height: 32px;
+            border-top: 1.5px solid #38bdf8;
+            border-bottom: 1.5px solid #38bdf8;
+            background: linear-gradient(180deg, rgba(56, 189, 248, 0.28) 0%, rgba(56, 189, 248, 0.10) 50%, rgba(56, 189, 248, 0.28) 100%);
+            pointer-events: none;
+            border-radius: 3px;
+            box-shadow: 0 0 24px rgba(56, 189, 248, 0.42), inset 0 0 10px rgba(56, 189, 248, 0.25);
+        }
+        /* Smart Live-Advisor & Ticker Widget */
+        .advisor-card {
+            background: rgba(30, 41, 59, 0.55);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(56, 189, 248, 0.25);
+            border-radius: 16px;
+            padding: 12px 16px;
+            margin-bottom: 18px;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 0 15px rgba(56, 189, 248, 0.08);
+            position: relative;
+            z-index: 100;
+        }
+        .advisor-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            padding-bottom: 6px;
+            position: relative;
+        }
+        .advisor-title {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #38bdf8;
+        }
+        .advisor-icon {
+            font-size: 15px;
+            animation: pulse-advisor 2.5s infinite ease-in-out;
+        }
+        @keyframes pulse-advisor {
+            0%, 100% { transform: scale(1); filter: drop-shadow(0 0 2px rgba(56,189,248,0.5)); }
+            50% { transform: scale(1.15); filter: drop-shadow(0 0 8px rgba(56,189,248,0.9)); }
+        }
+        .advisor-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .advisor-nav-btn {
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid rgba(56, 189, 248, 0.3);
+            color: #38bdf8;
+            border-radius: 6px;
+            padding: 2px 8px;
+            font-size: 11px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            user-select: none;
+        }
+        .advisor-nav-btn:hover {
+            background: rgba(56, 189, 248, 0.25);
+            color: #ffffff;
+            border-color: #38bdf8;
+        }
+        .advisor-counter {
+            font-family: monospace;
+            font-size: 11px;
+            color: #94a3b8;
+            min-width: 45px;
+            text-align: center;
+            user-select: none;
+        }
+        .advisor-ticker-box {
+            position: relative;
+            overflow: hidden;
+            width: 100%;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            background: rgba(15, 23, 42, 0.65);
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            padding: 0 10px;
+            cursor: grab;
+            user-select: none;
+            touch-action: pan-y;
+        }
+        .advisor-ticker-box:active {
+            cursor: grabbing;
+        }
+        .advisor-ticker-track {
+            display: inline-flex;
+            align-items: center;
+            white-space: nowrap;
+            will-change: transform;
+            position: absolute;
+            left: 10px;
+        }
+        .advisor-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 2px 7px;
+            border-radius: 12px;
+            font-size: 10.5px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            margin-right: 8px;
+            flex-shrink: 0;
+            line-height: 1.2;
+        }
+        .badge-optimal {
+            background: rgba(34, 197, 94, 0.18);
+            border: 1px solid rgba(34, 197, 94, 0.5);
+            color: #4ade80;
+            box-shadow: 0 0 8px rgba(34, 197, 94, 0.3);
+        }
+        .badge-tip {
+            background: rgba(234, 179, 8, 0.18);
+            border: 1px solid rgba(234, 179, 8, 0.5);
+            color: #facc15;
+            box-shadow: 0 0 8px rgba(234, 179, 8, 0.3);
+        }
+        .badge-alert {
+            background: rgba(239, 68, 68, 0.2);
+            border: 1px solid rgba(239, 68, 68, 0.6);
+            color: #f87171;
+            box-shadow: 0 0 10px rgba(239, 68, 68, 0.4);
+            animation: badge-alert-pulse 1.2s infinite ease-in-out;
+        }
+        @keyframes badge-alert-pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.04); }
+        }
+        .badge-weather {
+            background: rgba(56, 189, 248, 0.18);
+            border: 1px solid rgba(56, 189, 248, 0.5);
+            color: #38bdf8;
+            box-shadow: 0 0 8px rgba(56, 189, 248, 0.3);
+        }
+        .badge-system {
+            background: rgba(168, 85, 247, 0.18);
+            border: 1px solid rgba(168, 85, 247, 0.5);
+            color: #c084fc;
+            box-shadow: 0 0 8px rgba(168, 85, 247, 0.3);
+        }
+        .advisor-time {
+            font-family: monospace;
+            font-size: 11px;
+            color: #64748b;
+            margin-right: 8px;
+            flex-shrink: 0;
+        }
+        .advisor-msg-text {
+            font-size: 12.5px;
+            color: #f1f5f9;
+            font-weight: 500;
+            display: inline;
+        }
+        .advisor-popup-bubble {
+            position: absolute;
+            top: calc(100% + 8px);
+            left: 0;
+            right: 0;
+            background: #090d16;
+            border: 1px solid rgba(56, 189, 248, 0.6);
+            border-radius: 14px;
+            padding: 14px 16px;
+            box-shadow: 0 25px 60px -5px rgba(0, 0, 0, 0.98), 0 0 25px rgba(56, 189, 248, 0.35);
+            z-index: 9999;
+            animation: info-fade-in 0.2s ease-out;
+        }
+        .advisor-popup-bubble::before {
+            content: '';
+            position: absolute;
+            top: -8.5px;
+            left: 35px;
+            width: 0;
+            height: 0;
+            border-left: 7px solid transparent;
+            border-right: 7px solid transparent;
+            border-bottom: 8.5px solid rgba(56, 189, 248, 0.6);
+        }
+        .advisor-popup-bubble::after {
+            content: '';
+            position: absolute;
+            top: -7px;
+            left: 36px;
+            width: 0;
+            height: 0;
+            border-left: 6px solid transparent;
+            border-right: 6px solid transparent;
+            border-bottom: 7px solid #090d16;
+        }
+        .advisor-popup-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        .advisor-popup-close {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            color: #cbd5e1;
+            border-radius: 6px;
+            width: 22px;
+            height: 22px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .advisor-popup-close:hover {
+            background: rgba(239, 68, 68, 0.3);
+            border-color: #ef4444;
+            color: #ffffff;
+        }
+        .advisor-popup-content {
+            font-size: 13px;
+            color: #f1f5f9;
+            line-height: 1.55;
+            margin-bottom: 12px;
+            word-break: break-word;
+        }
+        .advisor-popup-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding-top: 8px;
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <h1 id="device-title">IDRY-26 Loading...</h1>
+        
+        <!-- Smart Live-Advisor & Grow-Heuristic Ticker Widget -->
+        <div class="advisor-card" id="advisor-widget">
+            <div class="advisor-header">
+                <div class="advisor-title">
+                    <span class="advisor-icon">🧠</span>
+                    <span>Grow Advisor &amp; Live Ticker</span>
+                </div>
+                <div class="advisor-controls">
+                    <button type="button" id="advisor-prev-btn" class="advisor-nav-btn" onclick="prevAdvisorMsg()" title="Vorherige ältere Nachricht">◀</button>
+                    <span id="advisor-counter" class="advisor-counter">1 / 1</span>
+                    <button type="button" id="advisor-next-btn" class="advisor-nav-btn" onclick="nextAdvisorMsg()" title="Nächste neuere Nachricht">▶</button>
+                    <span class="info-btn" onclick="toggleInfo(event, 20)" onmouseenter="showInfo(this, 20)" onmouseleave="hideInfo(this)">i</span>
+                </div>
+            </div>
+            <div class="advisor-ticker-box" id="advisor-ticker-box" title="Klicken für Volltext-Ansicht & Historie" onmouseenter="pauseAdvisorTicker()" onmouseleave="resumeAdvisorTicker()" onpointerdown="startAdvisorDrag(event)">
+                <div class="advisor-ticker-track" id="advisor-ticker-track">
+                    <span class="advisor-badge badge-optimal">🟢 SYSTEMBEREIT</span>
+                    <span class="advisor-time">[--:--:--]</span>
+                    <span class="advisor-msg-text">Smart Live Advisor Engine bereit. Analysiere thermodynamische Klimadaten...</span>
+                </div>
+            </div>
+            <!-- Interactive Full-Text Speech Bubble Modal -->
+            <div id="advisor-popup-bubble" class="advisor-popup-bubble" style="display:none;" onclick="event.stopPropagation()">
+                <div class="advisor-popup-header">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span class="advisor-icon">🧠</span>
+                        <span style="font-weight: bold; color: #38bdf8; font-size: 12.5px; letter-spacing: 0.5px;">ADVISOR VOLLTEXT</span>
+                    </div>
+                    <button type="button" class="advisor-popup-close" onclick="closeAdvisorPopup(event)" title="Schließen">✕</button>
+                </div>
+                <div id="advisor-popup-content" class="advisor-popup-content"></div>
+                <div class="advisor-popup-footer">
+                    <button type="button" id="advisor-popup-prev-btn" class="advisor-nav-btn" onclick="prevAdvisorPopup(event)" title="Vorherige ältere Nachricht">◀ Älter</button>
+                    <span id="advisor-popup-counter" class="advisor-counter">1 / 1</span>
+                    <button type="button" id="advisor-popup-next-btn" class="advisor-nav-btn" onclick="nextAdvisorPopup(event)" title="Nächste neuere Nachricht">Neuer ▶</button>
+                </div>
+            </div>
+        </div>
+
         <div class="grid">
             <div class="card">
                 <div id="strat-section" style="margin-bottom: 14px;">
-                    <div class="card-title">Dry Strategy</div>
+                    <div class="card-title"><span>Dry Strategy</span><span class="info-btn" onclick="toggleInfo(event, 0)" onmouseenter="showInfo(this, 0)" onmouseleave="hideInfo(this)">i</span></div>
                     <div style="display: flex; gap: 6px;">
                         <button id="strat-btn-6060" onclick="setDryStrategy(0, currentHygroLimit)" style="flex: 1; padding: 10px 0; background: #22c55e; border: 1px solid rgba(255,255,255,0.2); color: white; font-weight: bold; border-radius: 8px; cursor: pointer; transition: all 0.2s;">60/60</button>
                         <button id="strat-btn-vpd" onclick="setDryStrategy(1, currentHygroLimit)" style="flex: 1; padding: 10px 0; background: #1e293b; border: 1px solid rgba(255,255,255,0.15); color: #94a3b8; font-weight: bold; border-radius: 8px; cursor: pointer; transition: all 0.2s;">VPD</button>
@@ -2421,24 +2857,27 @@ void handlePortalRoot() {
                     </div>
                 </div>
                 <div id="vpd-auto-box" style="display: none; background: rgba(15,23,42,0.6); padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(56,189,248,0.25); margin-bottom: 14px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; position: relative;">
                         <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #38bdf8; font-weight: bold;">VPD AUTO</span>
-                        <select id="vpd-auto-day-select" onchange="onVpdDaySelectChange(this.value)" style="background: rgba(15,23,42,0.9); color: #38bdf8; font-size: 11px; font-weight: bold; border: 1px solid rgba(56,189,248,0.4); border-radius: 6px; padding: 2px 6px; outline: none; cursor: pointer;">
-                            <option value="1">Tag 1</option>
-                            <option value="2">Tag 2</option>
-                            <option value="3">Tag 3</option>
-                            <option value="4">Tag 4</option>
-                            <option value="5">Tag 5</option>
-                            <option value="6">Tag 6</option>
-                            <option value="7">Tag 7</option>
-                            <option value="8">Tag 8</option>
-                            <option value="9">Tag 9</option>
-                            <option value="10">Tag 10</option>
-                            <option value="11">Tag 11 (~Curing)</option>
-                            <option value="12">Tag 12 (~Curing)</option>
-                            <option value="13">Tag 13 (~Curing)</option>
-                            <option value="14">Tag 14 (~Curing)</option>
-                        </select>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <select id="vpd-auto-day-select" onchange="onVpdDaySelectChange(this.value)" style="background: rgba(15,23,42,0.9); color: #38bdf8; font-size: 11px; font-weight: bold; border: 1px solid rgba(56,189,248,0.4); border-radius: 6px; padding: 2px 6px; outline: none; cursor: pointer;">
+                                <option value="1">Tag 1</option>
+                                <option value="2">Tag 2</option>
+                                <option value="3">Tag 3</option>
+                                <option value="4">Tag 4</option>
+                                <option value="5">Tag 5</option>
+                                <option value="6">Tag 6</option>
+                                <option value="7">Tag 7</option>
+                                <option value="8">Tag 8</option>
+                                <option value="9">Tag 9</option>
+                                <option value="10">Tag 10</option>
+                                <option value="11">Tag 11 (~Curing)</option>
+                                <option value="12">Tag 12 (~Curing)</option>
+                                <option value="13">Tag 13 (~Curing)</option>
+                                <option value="14">Tag 14 (~Curing)</option>
+                            </select>
+                            <span class="info-btn" onclick="toggleInfo(event, 1)" onmouseenter="showInfo(this, 1)" onmouseleave="hideInfo(this)">i</span>
+                        </div>
                     </div>
                     <div style="position: relative; width: 100%; height: 100px; background: rgba(15,23,42,0.8); border-radius: 8px; border: 1px solid rgba(255,255,255,0.08); overflow: hidden; margin-bottom: 6px;">
                         <canvas id="vpd-heatmap-canvas" onpointerdown="handleHeatmapPointer(event)" onpointermove="if(event.buttons) handleHeatmapPointer(event)" onpointerup="stopHeatmapInspection()" onpointerleave="stopHeatmapInspection()" style="width: 100%; height: 100px; display: block; cursor: crosshair; touch-action: none;"></canvas>
@@ -2448,7 +2887,10 @@ void handlePortalRoot() {
                     </div>
                 </div>
                 <div id="hygro-limit-box" style="display: none; background: rgba(15,23,42,0.5); padding: 10px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08); margin-bottom: 14px;">
-                    <div style="font-size: 11px; color: #94a3b8; font-weight: 600; margin-bottom: 6px;">Hygro Limit (Schimmelschutz):</div>
+                    <div style="font-size: 11px; color: #94a3b8; font-weight: 600; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; position: relative;">
+                        <span>Hygro Limit (Schimmelschutz):</span>
+                        <span class="info-btn" onclick="toggleInfo(event, 2)" onmouseenter="showInfo(this, 2)" onmouseleave="hideInfo(this)">i</span>
+                    </div>
                     <div style="display: flex; gap: 14px; font-size: 13px; font-weight: bold; margin-bottom: 8px;">
                         <label style="cursor: pointer; color: #22c55e; display: flex; align-items: center; gap: 4px;">
                             <input type="radio" name="hygro_limit_radio" value="70" onchange="setDryStrategy(currentDryStrategy, 70)" id="hl-70"> 70%
@@ -2468,13 +2910,13 @@ void handlePortalRoot() {
                         <div id="calc-limit-notice" style="display: none; text-align: right; font-weight: bold; color: #f87171; font-size: 11px; margin-top: 3px;"></div>
                     </div>
                 </div>
-                <div class="card-title">Potentiometer</div>
+                <div class="card-title" style="margin-top: 14px;"><span>Potentiometer</span><span class="info-btn" onclick="toggleInfo(event, 3)" onmouseenter="showInfo(this, 3)" onmouseleave="hideInfo(this)">i</span></div>
                 <div class="value-row"><span id="poti-a-label">Sollwert Feuchte (A):</span><span class="val" id="poti-a">--</span></div>
                 <div class="value-row"><span>Gain Faktor (B):</span><span class="val" id="poti-b">--</span></div>
                 <div class="value-row"><span>Rotor-Offset (C):</span><span class="val" id="poti-c">--</span></div>
             </div>
             <div class="card">
-                <div class="card-title">Rotor & Servo</div>
+                <div class="card-title"><span>Rotor & Servo</span><span class="info-btn" onclick="toggleInfo(event, 4)" onmouseenter="showInfo(this, 4)" onmouseleave="hideInfo(this)">i</span></div>
                 <div class="value-row"><span>Rotor Stellung:</span><span class="val" id="rotor-pos">--</span></div>
                 <div class="moon-container">
                     <div id="luna" class="moon"></div>
@@ -2486,9 +2928,12 @@ void handlePortalRoot() {
                     </div>
                 </details>
                 <div id="purge-section" style="margin-top: 15px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 12px;">
-                    <div style="font-size: 11px; font-weight: bold; text-transform: uppercase; color: #94a3b8; letter-spacing: 0.5px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+                    <div style="font-size: 11px; font-weight: bold; text-transform: uppercase; color: #94a3b8; letter-spacing: 0.5px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; position: relative;">
                         <span>⏳ Stoßlüftungs-Timer</span>
-                        <span id="purge-badge" style="font-size: 10.5px; font-family: monospace; font-weight: bold; padding: 2px 6px; border-radius: 4px; background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3);">Aus</span>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span id="purge-badge" style="font-size: 10.5px; font-family: monospace; font-weight: bold; padding: 2px 6px; border-radius: 4px; background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3);">Aus</span>
+                            <span class="info-btn" onclick="toggleInfo(event, 5)" onmouseenter="showInfo(this, 5)" onmouseleave="hideInfo(this)">i</span>
+                        </div>
                     </div>
                     
                     <!-- Enlarged & Centered Sanduhr SVG (+40% size, 95x142px) -->
@@ -2501,48 +2946,54 @@ void handlePortalRoot() {
                         </svg>
                     </div>
 
-                    <!-- Dual Dropdown Selectors Below Sanduhr -->
-                    <div style="display: flex; gap: 10px; margin-top: 4px;">
+                    <!-- Dual 3D Selection Wheels (Drum Pickers) Below Sanduhr -->
+                    <div style="display: flex; gap: 10px; margin-top: 6px;">
                         <div style="flex: 1;">
                             <label style="font-size: 10px; color: #94a3b8; display: block; margin-bottom: 4px; text-align: center; font-weight: 600;">Intervall:</label>
-                            <select id="purge-interval-select" onchange="onPurgeSettingChange()" style="width: 100%; padding: 5px 6px; background: rgba(15,23,42,0.8); border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; color: white; font-size: 11.5px; outline: none; text-align: center;">
-                                <option value="0">Aus</option>
-                                <option value="10">10 min</option>
-                                <option value="20">20 min</option>
-                                <option value="30">30 min</option>
-                                <option value="45">45 min</option>
-                                <option value="60">1 h</option>
-                                <option value="120">2 h</option>
-                                <option value="180">3 h</option>
-                                <option value="240">4 h</option>
-                                <option value="300">5 h</option>
-                                <option value="600">10 h</option>
-                                <option value="720">12 h</option>
-                                <option value="1440">24 h</option>
-                            </select>
+                            <div class="drum-picker-wrapper">
+                                <div class="drum-picker" id="wheel-interval">
+                                    <div class="drum-item" data-val="0">Aus</div>
+                                    <div class="drum-item" data-val="10">10 min</div>
+                                    <div class="drum-item" data-val="20">20 min</div>
+                                    <div class="drum-item" data-val="30">30 min</div>
+                                    <div class="drum-item" data-val="45">45 min</div>
+                                    <div class="drum-item" data-val="60">1 h</div>
+                                    <div class="drum-item" data-val="120">2 h</div>
+                                    <div class="drum-item" data-val="180">3 h</div>
+                                    <div class="drum-item" data-val="240">4 h</div>
+                                    <div class="drum-item" data-val="300">5 h</div>
+                                    <div class="drum-item" data-val="600">10 h</div>
+                                    <div class="drum-item" data-val="720">12 h</div>
+                                    <div class="drum-item" data-val="1440">24 h</div>
+                                </div>
+                                <div class="drum-overlay"></div>
+                            </div>
                         </div>
                         <div style="flex: 1;">
                             <label style="font-size: 10px; color: #94a3b8; display: block; margin-bottom: 4px; text-align: center; font-weight: 600;">Dauer:</label>
-                            <select id="purge-duration-select" onchange="onPurgeSettingChange()" style="width: 100%; padding: 5px 6px; background: rgba(15,23,42,0.8); border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; color: white; font-size: 11.5px; outline: none; text-align: center;">
-                                <option value="10">10 sec</option>
-                                <option value="20">20 sec</option>
-                                <option value="30">30 sec</option>
-                                <option value="45">45 sec</option>
-                                <option value="60">1 min</option>
-                                <option value="90">1.5 min</option>
-                                <option value="120">2 min</option>
-                                <option value="180">3 min</option>
-                                <option value="240">4 min</option>
-                                <option value="300">5 min</option>
-                                <option value="450">7.5 min</option>
-                                <option value="600">10 min</option>
-                            </select>
+                            <div class="drum-picker-wrapper">
+                                <div class="drum-picker" id="wheel-duration">
+                                    <div class="drum-item" data-val="10">10 sec</div>
+                                    <div class="drum-item" data-val="20">20 sec</div>
+                                    <div class="drum-item" data-val="30">30 sec</div>
+                                    <div class="drum-item" data-val="45">45 sec</div>
+                                    <div class="drum-item" data-val="60">1 min</div>
+                                    <div class="drum-item" data-val="90">1.5 min</div>
+                                    <div class="drum-item" data-val="120">2 min</div>
+                                    <div class="drum-item" data-val="180">3 min</div>
+                                    <div class="drum-item" data-val="240">4 min</div>
+                                    <div class="drum-item" data-val="300">5 min</div>
+                                    <div class="drum-item" data-val="450">7.5 min</div>
+                                    <div class="drum-item" data-val="600">10 min</div>
+                                </div>
+                                <div class="drum-overlay"></div>
+                            </div>
                         </div>
                     </div>
                 </div>
             </div>
             <div class="card" id="espnow-card" style="display:none;">
-                <div class="card-title">ESPNOW</div>
+                <div class="card-title"><span>ESPNOW</span><span class="info-btn" onclick="toggleInfo(event, 6)" onmouseenter="showInfo(this, 6)" onmouseleave="hideInfo(this)">i</span></div>
                 <div class="value-row"><span>Rolle:</span><span class="val" id="espnow-val-role" style="font-weight: bold; text-transform: uppercase;">--</span></div>
                 <div class="value-row"><span>Verbindung:</span><span class="val" id="espnow-val-conn">--</span></div>
                 <div class="value-row"><span>Protokoll:</span><span class="val" id="espnow-val-pv">--</span></div>
@@ -2554,7 +3005,7 @@ void handlePortalRoot() {
                 </details>
             </div>
             <div class="card" id="mqtt-card" style="display:none;">
-                <div class="card-title" id="mqtt-title">MQTT Dashboard</div>
+                <div class="card-title"><span id="mqtt-title">MQTT Dashboard</span><span class="info-btn" onclick="toggleInfo(event, 7)" onmouseenter="showInfo(this, 7)" onmouseleave="hideInfo(this)">i</span></div>
                 <div class="value-row"><span>Broker:</span><span class="val" id="mqtt-broker">--</span></div>
                 <div class="value-row"><span>Status:</span><span class="val" id="mqtt-status">--</span></div>
                 <div class="value-row"><span style="flex-shrink: 0; margin-right: 10px;">Topic:</span><span class="val" id="mqtt-topic" style="font-size:11px; text-align: right; word-break:break-all;">--</span></div>
@@ -2566,7 +3017,7 @@ void handlePortalRoot() {
                 </details>
             </div>
             <div class="card" id="vpd-card" style="display:none;">
-                <div class="card-title">VPD (Sättigungsdefizit)</div>
+                <div class="card-title"><span>VPD (Sättigungsdefizit)</span><span class="info-btn" onclick="toggleInfo(event, 8)" onmouseenter="showInfo(this, 8)" onmouseleave="hideInfo(this)">i</span></div>
                 <div id="vpd-row-0" style="display:none;">
                     <div class="value-row"><span>VPD Innen (BME280):</span><span class="val" id="vpd-val-0">--</span></div>
                     <details open class="hist-toggle" id="details-vpd-0" ontoggle="renderAllCharts()">
@@ -2587,7 +3038,7 @@ void handlePortalRoot() {
                 </div>
             </div>
             <div class="card" id="sensor-card-0" style="display:none;">
-                <div class="card-title" id="sensor-title-0">Sensor 1</div>
+                <div class="card-title"><span id="sensor-title-0">Sensor 1</span><span class="info-btn" onclick="toggleInfo(event, 9)" onmouseenter="showInfo(this, 9)" onmouseleave="hideInfo(this)">i</span></div>
                 <div class="value-row"><span>Temperatur:</span><span class="val" id="temp-0">--</span></div>
                 <div class="value-row"><span>Feuchtigkeit:</span><span class="val" id="hum-0">--</span></div>
                 <div class="value-row" id="dp-row-0"><span>Taupunkt:</span><span class="val" id="dp-0">--</span></div>
@@ -2606,7 +3057,7 @@ void handlePortalRoot() {
                 </details>
             </div>
             <div class="card" id="sensor-card-1" style="display:none;">
-                <div class="card-title" id="sensor-title-1">Sensor 2</div>
+                <div class="card-title"><span id="sensor-title-1">Sensor 2</span><span class="info-btn" onclick="toggleInfo(event, 10)" onmouseenter="showInfo(this, 10)" onmouseleave="hideInfo(this)">i</span></div>
                 <div class="value-row"><span>Temperatur:</span><span class="val" id="temp-1">--</span></div>
                 <div class="value-row"><span>Feuchtigkeit:</span><span class="val" id="hum-1">--</span></div>
                 <div class="value-row" id="dp-row-1"><span>Taupunkt:</span><span class="val" id="dp-1">--</span></div>
@@ -2625,7 +3076,7 @@ void handlePortalRoot() {
                 </details>
             </div>
             <div class="card" id="light-card-0" style="display:none;">
-                <div class="card-title" id="light-title-0">TSL2561 (1)</div>
+                <div class="card-title"><span id="light-title-0">TSL2561 (1)</span><span class="info-btn" onclick="toggleInfo(event, 11)" onmouseenter="showInfo(this, 11)" onmouseleave="hideInfo(this)">i</span></div>
                 <div class="value-row"><span>Helligkeit:</span><span class="val" id="lux-val-0">--</span></div>
                 <div class="value-row"><span>Breitband:</span><span class="val" id="broadband-val-0">--</span></div>
                 <div class="value-row"><span>Infrarot:</span><span class="val" id="ir-val-0">--</span></div>
@@ -2637,7 +3088,7 @@ void handlePortalRoot() {
                 </details>
             </div>
             <div class="card" id="light-card-1" style="display:none;">
-                <div class="card-title" id="light-title-1">TSL2561 (2)</div>
+                <div class="card-title"><span id="light-title-1">TSL2561 (2)</span><span class="info-btn" onclick="toggleInfo(event, 12)" onmouseenter="showInfo(this, 12)" onmouseleave="hideInfo(this)">i</span></div>
                 <div class="value-row"><span>Helligkeit:</span><span class="val" id="lux-val-1">--</span></div>
                 <div class="value-row"><span>Breitband:</span><span class="val" id="broadband-val-1">--</span></div>
                 <div class="value-row"><span>Infrarot:</span><span class="val" id="ir-val-1">--</span></div>
@@ -2663,7 +3114,7 @@ void handlePortalRoot() {
         </div>
 
         <div class="card">
-            <div class="card-title">System Status</div>
+            <div class="card-title"><span>System Status</span><span class="info-btn" onclick="toggleInfo(event, 13)" onmouseenter="showInfo(this, 13)" onmouseleave="hideInfo(this)">i</span></div>
             <div class="value-row"><span>IP-Adresse:</span><span class="val" id="sys-ip">--</span></div>
             <div class="value-row"><span>Anzeige-Modus:</span><span class="val" id="sys-mode">--</span></div>
             <div class="value-row">
@@ -2717,9 +3168,7 @@ void handlePortalRoot() {
             </details>
         </div>
         <div class="footer" style="display: flex; justify-content: space-between; align-items: center; margin-top: 25px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.05);">
-            <span id="footer-text">iDRY26 v1.)rawhtml" +
-        String(localFirmwareVersion) +
-        R"rawhtml( - (bench: <span id="footer-bench" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> loops/s | heap: <span id="footer-heap" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> KB | alloc: <span id="footer-alloc" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> KB)</span>
+            <span id="footer-text">iDRY26 - (bench: <span id="footer-bench" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> loops/s | heap: <span id="footer-heap" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> KB | alloc: <span id="footer-alloc" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> KB)</span>
             <a href="/settings" id="footer-settings-link" style="color: #818cf8; text-decoration: none; display: inline-flex; align-items: center; gap: 5px; font-weight: 600; padding: 6px 12px; background: rgba(129, 140, 248, 0.1); border-radius: 8px; border: 1px solid rgba(129, 140, 248, 0.2); transition: all 0.2s;">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l-.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
                 Einstellungen
@@ -2783,9 +3232,480 @@ void handlePortalRoot() {
         </div>
     </div>
     <script>
+        const PANEL_INFOS = {
+            // [0] Dry Strategy
+            0: "<b>Dry Strategy</b><br>Wahl der Trocknungsstrategie: Klassischer 60/60 Modus (60°F / 60% rF), dynamischer VPD Modus oder automatisierter 14-Tage VPD AUTO Stufenplan.",
+            
+            // [1] VPD AUTO Matrix & Timeline
+            1: "<b>VPD AUTO Modus</b><br>Wissenschaftlicher 21x14 Matrix-Stufenplan mit temperaturkompensiertem VPD-Sollwertverlauf über 14 Tage inklusive Schimmelschutz.",
+            
+            // [2] Hygro Limit Schimmelschutz
+            2: "<b>Hygro-Limit Schimmelschutz</b><br>Sicherheits-Obergrenze für die relative Zielfeuchte (70%, 75% oder 80%), um Schimmelbildung in feuchten Umgebungen rigoros zu verhindern.",
+            
+            // [3] Potentiometer
+            3: "<b>Potentiometer</b><br>Analoge Hardware-Regler für Sollwert-Feuchte A (inkl. Rigoros ZU/AUF Schalter), Regelverstärkung B (Gain 0-400%) und virtuellen 0°-Kalibrierungs-Offset C.",
+            
+            // [4] Rotor & Servo
+            4: "<b>Rotor & Servo</b><br>Echtzeit-Stellungsanzeige des Lüftungsrotors (0-100%) mit animierter Mondphasen-Visualisierung und 60-Minuten-Verlaufshistorie.",
+            
+            // [5] Stoßlüftungs-Timer
+            5: "<b>Stoßlüftungs-Timer</b><br>Periodische Zwangsbelüftung mit animierter Sanduhr und 3D-Walzenwählern für Intervall (10m-24h) und Öffnungsdauer (10s-10m).",
+            
+            // [6] ESPNOW
+            6: "<b>ESP-NOW Funkverbindung</b><br>Drahtlose Echtzeit-Synchronisation zwischen Master und Slave-Geräten mit Link-Monitoring und Ausfall-Historie.",
+            
+            // [7] MQTT Dashboard
+            7: "<b>MQTT Dashboard</b><br>Status der Anbindung an Home Assistant / MQTT-Broker mit Verbindungs-Historie und Telemetrie-Topics.",
+            
+            // [8] VPD (Sättigungsdefizit)
+            8: "<b>VPD (Dampfdruckdefizit)</b><br>Berechnetes Sättigungsdefizit der Innen- und Außenluft in kPa zur präzisen Steuerung des Transpirationsdrucks.",
+            
+            // [9] Sensor 1
+            9: "<b>Sensor 1 (Innen)</b><br>Primärer Klimasensor (BME280 / SHT3x) für Temperatur, relative Feuchte, Taupunkt und Luftdruck.",
+            
+            // [10] Sensor 2
+            10: "<b>Sensor 2 (Außen)</b><br>Sekundärer Umgebungssensor für thermodynamischen Bypass-Schutz und Zuluft-Kompensation.",
+            
+            // [11] TSL2561 (1)
+            11: "<b>Lichtsensor 1</b><br>Digitaler Helligkeitssensor (TSL2561) zur Erfassung von Lux, Breitband- und Infrarot-Lichtspektrum.",
+            
+            // [12] TSL2561 (2)
+            12: "<b>Lichtsensor 2</b><br>Sekundärer digitaler Helligkeitssensor zur redundanten Lichtüberwachung.",
+            
+            // [13] System Status & Konsolen
+            13: "<b>System Status &amp; Konsolen</b><br>Diagnose-Übersicht mit IP-Adresse, Display-Modus, RSSI-Signalstärke, 4h-Signalverlauf sowie Live-Terminal-Konsolen für lokale System-Logs und remote ESP-NOW Logs.",
+
+            // [20] Grow Advisor & Live Ticker (Grow-Bro Disclaimer)
+            20: "<b>Grow Advisor &amp; Live Ticker</b><br>Dies sind unverbindliche Tipps &amp; Denkanstöße – nimm sie bitte nicht zu bierernst! Die Automatik regelt so gut es geht, aber kein Algorithmus kann dein gärtnerisches Feingefühl ersetzen. Jeder Grow, jedes Zelt und jedes Raumklima ist anders. Sieh die Tipps nicht als Panik-Alarm, sondern als Anregung zum Mitdenken und selber Recherchieren. Keine Gewähr auf dynamische Tipps – Happy Growing! 🌿✌️"
+        };
+
+        let activeBubble = null;
+        let activeBubbleBtn = null;
+
+        function showInfo(btn, idx) {
+            hideInfo();
+            if (!PANEL_INFOS[idx]) return;
+            const bubble = document.createElement('div');
+            bubble.className = 'info-bubble';
+            bubble.innerHTML = PANEL_INFOS[idx];
+            btn.parentElement.appendChild(bubble);
+            btn.classList.add('active');
+            activeBubble = bubble;
+            activeBubbleBtn = btn;
+        }
+
+        function hideInfo() {
+            if (activeBubble) {
+                if (activeBubble.parentElement) activeBubble.parentElement.removeChild(activeBubble);
+                activeBubble = null;
+            }
+            if (activeBubbleBtn) {
+                activeBubbleBtn.classList.remove('active');
+                activeBubbleBtn = null;
+            }
+        }
+
+        function toggleInfo(evt, idx) {
+            evt.stopPropagation();
+            if (activeBubbleBtn === evt.currentTarget) {
+                hideInfo();
+            } else {
+                showInfo(evt.currentTarget, idx);
+            }
+        }
+
+        document.addEventListener('click', function(e) {
+            if (activeBubble && !activeBubble.contains(e.target) && e.target !== activeBubbleBtn) {
+                hideInfo();
+            }
+            const advisorBubble = document.getElementById('advisor-popup-bubble');
+            const tickerBox = document.getElementById('advisor-ticker-box');
+            if (advisorBubble && advisorBubble.style.display !== 'none' && !advisorBubble.contains(e.target) && (!tickerBox || !tickerBox.contains(e.target))) {
+                closeAdvisorPopup();
+            }
+        });
+
+        // --- Smart Live-Advisor & Heuristic Ringbuffer Engine ---
+        const ADVISOR_MAX_MSGS = 20;
+        let advisorRingBuffer = [
+            {
+                type: 'optimal',
+                badgeClass: 'badge-optimal',
+                badgeText: '🟢 SYSTEMBEREIT',
+                timeStr: '[00:00:00]',
+                rawText: 'Smart Live Advisor Engine bereit. Analysiere thermodynamische Klimadaten...'
+            }
+        ];
+        let advisorCurrentIdx = 0;
+        let advisorPaused = false;
+        let advisorScrollAnim = null;
+        let advisorDwellTimer = null;
+        let advisorCurrentX = 0;
+        let advisorSpeed = 38; // pixels per second
+        let advisorLastTimestamp = null;
+        let lastAdvisorEvalTime = 0;
+        let pressureHistory = []; // { time, press } for barometer 3h slope
+
+        function pushAdvisorMsg(type, badgeClass, badgeText, msgText) {
+            const now = new Date();
+            const timeStr = "[" + String(now.getHours()).padStart(2,'0') + ":" + String(now.getMinutes()).padStart(2,'0') + ":" + String(now.getSeconds()).padStart(2,'0') + "]";
+            
+            // Deduplication: Only append if NOT identical to the latest report in ringbuffer
+            if (advisorRingBuffer.length > 0 && advisorRingBuffer[0].rawText === msgText) {
+                return;
+            }
+
+            const item = {
+                type: type,
+                badgeClass: badgeClass,
+                badgeText: badgeText,
+                timeStr: timeStr,
+                rawText: msgText
+            };
+
+            advisorRingBuffer.unshift(item);
+            if (advisorRingBuffer.length > ADVISOR_MAX_MSGS) {
+                advisorRingBuffer.pop();
+            }
+
+            // If user is viewing the latest live message (idx 0), render and start continuous scroll
+            if (advisorCurrentIdx === 0) {
+                renderAdvisorMsg(0);
+            } else {
+                updateAdvisorCounter();
+            }
+        }
+
+        function renderAdvisorMsg(idx) {
+            if (idx < 0 || idx >= advisorRingBuffer.length) return;
+            advisorCurrentIdx = idx;
+            const item = advisorRingBuffer[idx];
+            const track = document.getElementById('advisor-ticker-track');
+            const box = document.getElementById('advisor-ticker-box');
+            if (!track || !box) return;
+
+            if (advisorScrollAnim) cancelAnimationFrame(advisorScrollAnim);
+            if (advisorDwellTimer) clearTimeout(advisorDwellTimer);
+
+            track.innerHTML = '<span class="advisor-badge ' + item.badgeClass + '">' + item.badgeText + '</span>' +
+                              '<span class="advisor-time">' + item.timeStr + '</span>' +
+                              '<span class="advisor-msg-text">' + item.rawText + '</span>';
+
+            updateAdvisorCounter();
+
+            // Start at x = 0 with a 2.0s initial reading pause, then scroll continuously non-stop!
+            advisorCurrentX = 0;
+            track.style.transform = 'translateX(0px)';
+            advisorLastTimestamp = null;
+
+            advisorDwellTimer = setTimeout(() => {
+                advisorLastTimestamp = null;
+                advisorScrollAnim = requestAnimationFrame(stepContinuousScroll);
+            }, 2000);
+        }
+
+        function stepContinuousScroll(timestamp) {
+            const track = document.getElementById('advisor-ticker-track');
+            const box = document.getElementById('advisor-ticker-box');
+            if (!track || !box) return;
+
+            if (advisorPaused) {
+                advisorLastTimestamp = timestamp;
+                advisorScrollAnim = requestAnimationFrame(stepContinuousScroll);
+                return;
+            }
+
+            if (!advisorLastTimestamp) advisorLastTimestamp = timestamp;
+            const dt = (timestamp - advisorLastTimestamp) / 1000.0;
+            advisorLastTimestamp = timestamp;
+
+            const boxW = box.clientWidth || 300;
+            const trackW = track.scrollWidth || 600;
+
+            advisorCurrentX -= advisorSpeed * dt;
+
+            // When message has completely scrolled out on left, wrap it back to right edge (seamless non-stop loop!)
+            if (advisorCurrentX <= -trackW) {
+                advisorCurrentX = boxW;
+            }
+
+            track.style.transform = 'translateX(' + advisorCurrentX + 'px)';
+            advisorScrollAnim = requestAnimationFrame(stepContinuousScroll);
+        }
+
+        function prevAdvisorMsg() {
+            if (advisorCurrentIdx < advisorRingBuffer.length - 1) {
+                renderAdvisorMsg(advisorCurrentIdx + 1);
+            }
+        }
+
+        function nextAdvisorMsg() {
+            if (advisorCurrentIdx > 0) {
+                renderAdvisorMsg(advisorCurrentIdx - 1);
+            }
+        }
+
+        function updateAdvisorCounter() {
+            const total = Math.max(1, advisorRingBuffer.length);
+            const current = total === 0 ? 1 : (advisorCurrentIdx + 1);
+
+            const counter = document.getElementById('advisor-counter');
+            if (counter) counter.innerText = current + " / " + total;
+
+            const popupCounter = document.getElementById('advisor-popup-counter');
+            if (popupCounter) popupCounter.innerText = current + " / " + total;
+
+            // Boundary Visibility:
+            // "Neuer" (next) button: only visible if currentIdx > 0 (can go newer)
+            const showNext = advisorCurrentIdx > 0;
+            const nextBtn = document.getElementById('advisor-next-btn');
+            if (nextBtn) nextBtn.style.visibility = showNext ? 'visible' : 'hidden';
+
+            const popupNextBtn = document.getElementById('advisor-popup-next-btn');
+            if (popupNextBtn) popupNextBtn.style.visibility = showNext ? 'visible' : 'hidden';
+
+            // "Älter" (prev) button: only visible if currentIdx < total - 1 (can go older)
+            const showPrev = advisorCurrentIdx < total - 1;
+            const prevBtn = document.getElementById('advisor-prev-btn');
+            if (prevBtn) prevBtn.style.visibility = showPrev ? 'visible' : 'hidden';
+
+            const popupPrevBtn = document.getElementById('advisor-popup-prev-btn');
+            if (popupPrevBtn) popupPrevBtn.style.visibility = showPrev ? 'visible' : 'hidden';
+        }
+
+        function pauseAdvisorTicker() {
+            advisorPaused = true;
+        }
+
+        function resumeAdvisorTicker() {
+            advisorPaused = false;
+            advisorLastTimestamp = null;
+        }
+
+        // Gesture Drag, Tap & Full-Text Bubble Handling
+        let dragStartX = 0;
+        let dragStartY = 0;
+        let isDraggingAdvisor = false;
+
+        function startAdvisorDrag(e) {
+            dragStartX = e.clientX || (e.touches && e.touches[0].clientX) || 0;
+            dragStartY = e.clientY || (e.touches && e.touches[0].clientY) || 0;
+            isDraggingAdvisor = true;
+            pauseAdvisorTicker();
+        }
+
+        document.addEventListener('pointerup', function(e) {
+            if (!isDraggingAdvisor) return;
+            isDraggingAdvisor = false;
+            const endX = e.clientX || 0;
+            const endY = e.clientY || 0;
+            const diffX = endX - dragStartX;
+            const diffY = endY - dragStartY;
+
+            if (Math.abs(diffX) <= 6 && Math.abs(diffY) <= 6) {
+                // User clicked/tapped without moving -> Open Full-Text Speech Bubble!
+                openAdvisorPopup(advisorCurrentIdx);
+                return;
+            }
+
+            if (Math.abs(diffX) > 35) {
+                if (diffX > 0) {
+                    prevAdvisorMsg(); // Swiped right -> older
+                } else {
+                    nextAdvisorMsg(); // Swiped left -> newer
+                }
+            }
+            setTimeout(resumeAdvisorTicker, 1500);
+        });
+
+        function openAdvisorPopup(idx) {
+            if (idx < 0 || idx >= advisorRingBuffer.length) return;
+            advisorCurrentIdx = idx;
+            const item = advisorRingBuffer[idx];
+            const popup = document.getElementById('advisor-popup-bubble');
+            const content = document.getElementById('advisor-popup-content');
+            if (!popup || !content) return;
+
+            pauseAdvisorTicker();
+            content.innerHTML = '<div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">' +
+                                '<span class="advisor-badge ' + item.badgeClass + '">' + item.badgeText + '</span>' +
+                                '<span class="advisor-time">' + item.timeStr + '</span>' +
+                                '</div>' +
+                                '<div style="font-size:13.5px; color:#f8fafc; font-weight:500; line-height:1.5;">' + item.rawText + '</div>';
+
+            popup.style.display = 'block';
+            updateAdvisorCounter();
+        }
+
+        function closeAdvisorPopup(e) {
+            if (e) e.stopPropagation();
+            const popup = document.getElementById('advisor-popup-bubble');
+            if (popup) popup.style.display = 'none';
+            resumeAdvisorTicker();
+        }
+
+        function prevAdvisorPopup(e) {
+            if (e) e.stopPropagation();
+            if (advisorCurrentIdx < advisorRingBuffer.length - 1) {
+                let pIdx = advisorCurrentIdx + 1;
+                renderAdvisorMsg(pIdx);
+                openAdvisorPopup(pIdx);
+            }
+        }
+
+        function nextAdvisorPopup(e) {
+            if (e) e.stopPropagation();
+            if (advisorCurrentIdx > 0) {
+                let nIdx = advisorCurrentIdx - 1;
+                renderAdvisorMsg(nIdx);
+                openAdvisorPopup(nIdx);
+            }
+        }
+
+        function evaluateGrowerHeuristics(data) {
+            const now = Date.now();
+            if (now - lastAdvisorEvalTime < 10000) return;
+            lastAdvisorEvalTime = now;
+
+            // Extract sensor & state variables
+            let s0 = data.sensors && data.sensors[0] ? data.sensors[0] : null;
+            let s1 = data.sensors && data.sensors[1] ? data.sensors[1] : null;
+
+            const tempIn = s0 && s0.temperature !== undefined && s0.temperature !== null ? s0.temperature : null;
+            const humIn = s0 && s0.humidity !== undefined && s0.humidity !== null ? s0.humidity : null;
+            const dpIn = s0 && s0.dewpoint !== undefined && s0.dewpoint !== null ? s0.dewpoint : null;
+            const vpdIn = s0 && s0.vpd !== undefined && s0.vpd !== null ? s0.vpd : (calculateVPD_JS(tempIn, humIn));
+            const pressIn = s0 && s0.pressure !== undefined && s0.pressure !== null ? s0.pressure : null;
+
+            const tempOut = s1 && s1.temperature !== undefined && s1.temperature !== null ? s1.temperature : null;
+            const humOut = s1 && s1.humidity !== undefined && s1.humidity !== null ? s1.humidity : null;
+            const vpdOut = s1 && s1.vpd !== undefined && s1.vpd !== null ? s1.vpd : (calculateVPD_JS(tempOut, humOut));
+            const pressOut = s1 && s1.pressure !== undefined && s1.pressure !== null ? s1.pressure : null;
+
+            const dryStrat = data.dry_strategy !== undefined ? data.dry_strategy : 0;
+            const vpdTarget = (data.potentiometers && data.potentiometers.target_vpd) ? data.potentiometers.target_vpd : 0.85;
+            const targetHumPoti = (data.potentiometers && data.potentiometers.poti_a_target_hum) ? data.potentiometers.poti_a_target_hum : 60;
+            const vpdAutoDay = data.vpd_auto_day !== undefined ? data.vpd_auto_day : 1;
+            const hygroLimit = data.hygro_limit !== undefined ? data.hygro_limit : 75;
+            const purgeActive = data.purge_active || false;
+            const rotorPos = data.rotor_position !== undefined ? Math.round(data.rotor_position) : 0;
+
+            // Integer-quantized values for stable deduplication without jitter
+            const rTempIn = tempIn !== null ? Math.round(tempIn) : null;
+            const rHumIn = humIn !== null ? Math.round(humIn) : null;
+            const rDpIn = dpIn !== null ? Math.round(dpIn) : null;
+            const rVpdIn = vpdIn !== null ? (Math.round(vpdIn * 10) / 10).toFixed(1) : null;
+            const rVpdTarget = (Math.round(vpdTarget * 10) / 10).toFixed(1);
+
+            const rTempOut = tempOut !== null ? Math.round(tempOut) : null;
+            const rHumOut = humOut !== null ? Math.round(humOut) : null;
+
+            // 1. Weather Pressure Slope Tracking
+            if (pressIn && pressIn > 300) {
+                pressureHistory.push({ time: now, press: pressIn });
+                pressureHistory = pressureHistory.filter(p => now - p.time <= 4 * 3600 * 1000);
+            }
+
+            let pressSlope = 0;
+            if (pressureHistory.length >= 2) {
+                const oldest = pressureHistory[0];
+                const newest = pressureHistory[pressureHistory.length - 1];
+                const dtHours = (newest.time - oldest.time) / (3600 * 1000);
+                if (dtHours >= 0.5) {
+                    pressSlope = Math.round(((newest.press - oldest.press) / dtHours) * 3.0); // rounded hPa/3h
+                }
+            }
+
+            // --- Priority 1: Hardware & Environment Safety Events ---
+
+            // A. Active Stoßlüftung Notification
+            if (purgeActive) {
+                pushAdvisorMsg('event', 'badge-system', '🟣 STOSSLÜFTUNG', 'Stoßlüftung aktiv: Klappe 100% geöffnet. Zelt wird intensiv mit Frischluft gespült.');
+                return;
+            }
+
+            // B. Tent Wall Condensation Hazard (Outside colder than inside & high humidity)
+            if (tempIn !== null && tempOut !== null && humIn !== null) {
+                const deltaT = Math.round(tempIn - tempOut);
+                if (deltaT >= 3 && rHumIn >= 65) {
+                    pushAdvisorMsg('alert', 'badge-alert', '🔴 KONDENSATION', 'Kondensationsrisiko: Zeltwand kühlt von außen stark ab (ΔT ' + deltaT + '°C, Innenfeuchte ' + rHumIn + '% rF). Umluft auf Zeltwände/Boden richten oder Vorraum heizen!');
+                    return;
+                }
+            }
+
+            // C. Barometric Trend Alerts
+            if (pressSlope <= -2) {
+                pushAdvisorMsg('weather', 'badge-weather', '🔵 TIEFDRUCKFRONT', 'Barometer fällt (' + pressSlope + ' hPa/3h). Regen/steigende Außenfeuchte im Anmarsch – Entfeuchter im Vorraum bereithalten.');
+            } else if (pressSlope >= 2) {
+                pushAdvisorMsg('weather', 'badge-weather', '🔵 HOCHDRUCKWETTER', 'Barometer steigt (+' + pressSlope + ' hPa/3h). Trockene Witterung zieht auf – Übertrocknung im Auge behalten.');
+            }
+
+            // --- Priority 2: Strategy-Specific Climate Diagnostics & Tips ---
+
+            if (dryStrat === 2) { // === VPD AUTO MODE ===
+                if (rVpdIn !== null) {
+                    let stageText = "";
+                    if (vpdAutoDay <= 3) stageText = "Tag " + vpdAutoDay + "/14 (Frische Ernte): Hoher Feuchteabtrag. Klappe federt Spitzen ab.";
+                    else if (vpdAutoDay <= 10) stageText = "Tag " + vpdAutoDay + "/14 (Curing-Phase): Gleichmäßiger Feuchteabbau im Zielkorridor.";
+                    else stageText = "Tag " + vpdAutoDay + "/14 (Ziellandung): Stängel-Knicktest durchführen (knackt der Stängel, ist die Ernte perfekt trocken!).";
+
+                    if (vpdIn < 0.55 || (humIn && humIn >= hygroLimit)) {
+                        if (rHumOut !== null && rHumOut < 58) {
+                            pushAdvisorMsg('alert', 'badge-alert', '🔴 SCHIMMELSCHUTZ', 'VPD AUTO ' + stageText + ' – Warnung: Ist-VPD ' + rVpdIn + ' kPa zu niedrig (Soll: ' + rVpdTarget + ' kPa, Feuchte: ' + (rHumIn !== null ? rHumIn : '--') + '% rF). Lüftung erhöhen, um trockenere Außenluft nachzuziehen.');
+                        } else {
+                            pushAdvisorMsg('alert', 'badge-alert', '🔴 SCHIMMELSCHUTZ', 'VPD AUTO ' + stageText + ' – Warnung: Ist-VPD ' + rVpdIn + ' kPa zu niedrig. Außenluft ebenfalls feucht: Vorraum um 1–2°C heizen oder Entfeuchter einschalten!');
+                        }
+                    } else if (vpdIn > 1.30) {
+                        if (rHumOut !== null && rHumOut > (rHumIn || 50)) {
+                            pushAdvisorMsg('tip', 'badge-tip', '🟡 HEUGERUCH-GEFAHR', 'VPD AUTO ' + stageText + ' – Tipp: Ist-VPD ' + rVpdIn + ' kPa zu hoch (Soll: ' + rVpdTarget + ' kPa). Trocknung zu aggressiv! Klappe weiter schließen, um Feuchte im Zelt zu halten.');
+                        } else {
+                            pushAdvisorMsg('tip', 'badge-tip', '🟡 TROCKENE ZULUFT', 'VPD AUTO ' + stageText + ' – Tipp: Ist-VPD ' + rVpdIn + ' kPa zu hoch. Trockene Zuluft: Nasses Handtuch oder Wasserschale vor Bodenventilator platzieren (Umluft NIE direkt auf Blüten!).');
+                        }
+                    } else {
+                        pushAdvisorMsg('optimal', 'badge-optimal', '🟢 VPD AUTO OPTIMAL', 'VPD AUTO ' + stageText + ' – Perfekt: Ist-VPD ' + rVpdIn + ' kPa liegt exakt am Stufenplan-Zielwert (' + rVpdTarget + ' kPa, Klappe: ' + rotorPos + '%).');
+                    }
+                }
+            } else if (dryStrat === 1) { // === MANUAL VPD MODE ===
+                if (rVpdIn !== null) {
+                    if (vpdIn < 0.55 || (humIn && humIn >= hygroLimit)) {
+                        if (rHumOut !== null && rHumOut < 58) {
+                            pushAdvisorMsg('alert', 'badge-alert', '🔴 SCHIMMELSCHUTZ', 'VPD Modus: Ist-VPD ' + rVpdIn + ' kPa zu niedrig (Soll: ' + rVpdTarget + ' kPa / ' + (rHumIn !== null ? rHumIn : '--') + '% rF). Schimmelrisiko: Klappe/Abluft erhöhen, um trockenere Außenluft einzusaugen.');
+                        } else {
+                            pushAdvisorMsg('alert', 'badge-alert', '🔴 RAUMKLIMA', 'VPD Modus: Ist-VPD ' + rVpdIn + ' kPa zu niedrig. Außenluft ebenfalls feucht: Vorraum um +1–2°C erwärmen (senkt rF) oder Raumentfeuchter zuschalten.');
+                        }
+                    } else if (vpdIn > 1.30) {
+                        if (rHumOut !== null && rHumOut > (rHumIn || 50)) {
+                            pushAdvisorMsg('tip', 'badge-tip', '🟡 HEUGERUCH-GEFAHR', 'VPD Modus: Ist-VPD ' + rVpdIn + ' kPa zu hoch (Soll: ' + rVpdTarget + ' kPa). Zu rasche Austrocknung zerstört Terpene! Klappe drosseln.');
+                        } else {
+                            pushAdvisorMsg('tip', 'badge-tip', '🟡 TROCKENE ZULUFT', 'VPD Modus: Ist-VPD ' + rVpdIn + ' kPa zu hoch. Sehr trockener Vorraum. DIY: Nasses Handtuch auf Zeltboden platzieren; Umluft nur indirekt strömen lassen.');
+                        }
+                    } else {
+                        pushAdvisorMsg('optimal', 'badge-optimal', '🟢 VPD OPTIMAL', 'VPD Modus: Transpirationsdruck bei ' + rVpdIn + ' kPa (Soll: ' + rVpdTarget + ' kPa) perfekt ausbalanciert. Blüten reifen gleichmäßig.');
+                    }
+                }
+            } else { // === 60/60 MODE ===
+                if (rHumIn !== null) {
+                    const targetRH = Math.round((targetHumPoti >= 50 && targetHumPoti <= 70) ? targetHumPoti : 60);
+                    const deltaRH = Math.round(humIn - targetRH);
+
+                    if (deltaRH >= 3 || rHumIn > 65) {
+                        if (rHumOut !== null && rHumOut < (rHumIn - 3)) {
+                            pushAdvisorMsg('tip', 'badge-tip', '🟡 ENTLÜFTEN', '60/60 Modus: Feuchte bei ' + rHumIn + '% rF (Soll: ' + targetRH + '%, Δ +' + deltaRH + '%). Außenluft ist mit ' + rHumOut + '% rF trockener – Klappe weiter öffnen und Abluft steigern.');
+                        } else {
+                            pushAdvisorMsg('tip', 'badge-tip', '🟡 RAUMKLIMA', '60/60 Modus: Feuchte bei ' + rHumIn + '% rF (Soll: ' + targetRH + '%, Δ +' + (deltaRH >= 0 ? '+' : '') + deltaRH + '%). Außenluft ebenfalls feucht (' + (rHumOut !== null ? rHumOut : '--') + '% rF)! Vorraum um 1–2°C heizen oder Entfeuchter starten.');
+                        }
+                    } else if (deltaRH <= -3 || rHumIn < 55) {
+                        pushAdvisorMsg('tip', 'badge-tip', '🟡 ZU TROCKEN', '60/60 Modus: Feuchte bei ' + rHumIn + '% rF (Soll: ' + targetRH + '%, Δ ' + deltaRH + '%). Gefahr von Heugeruch! Klappe drosseln; DIY-Tipp: Nasses Tuch oder Wasserschale auf Zeltboden stellen.');
+                    } else {
+                        pushAdvisorMsg('optimal', 'badge-optimal', '🟢 60/60 OPTIMAL', '60/60 Modus: Feuchte bei ' + rHumIn + '% rF liegt perfekt im Zielkorridor (Soll: ' + targetRH + '% rF, Taupunkt: ' + (rDpIn !== null ? rDpIn : '--') + '°C). Reifung verläuft ideal.');
+                    }
+                }
+            }
+        }
+
         const wifiSSID = ")rawhtml";
-    html += String(sysConfig.wifi_ssid);
-    html += R"rawhtml(";
+
+    const char* DASHBOARD_HTML_PART3 = R"rawhtml(";
         let wasInPortalMode = false;
         let favCanvas = null;
         function updateFaviconMoon(p, isSlave) {
@@ -2904,17 +3824,130 @@ void handlePortalRoot() {
                 }).catch(e => console.error("Dry Strategy save error", e));
         }
 
+        let isDrumUserScrolling = false;
+        let drumScrollTimeout = null;
+
+        function getDrumValue(pickerId) {
+            let picker = document.getElementById(pickerId);
+            if (!picker) return 0;
+            let items = picker.querySelectorAll('.drum-item');
+            let itemHeight = 28;
+            let index = Math.round(picker.scrollTop / itemHeight);
+            if (index < 0) index = 0;
+            if (index >= items.length) index = items.length - 1;
+            return parseInt(items[index].dataset.val || "0");
+        }
+
+        function setDrumValue(pickerId, val) {
+            let picker = document.getElementById(pickerId);
+            if (!picker || isDrumUserScrolling) return;
+            let items = picker.querySelectorAll('.drum-item');
+            let itemHeight = 28;
+            for (let i = 0; i < items.length; i++) {
+                if (parseInt(items[i].dataset.val) === parseInt(val)) {
+                    picker.scrollTop = i * itemHeight;
+                    updateDrumItemClasses(picker, i);
+                    break;
+                }
+            }
+        }
+
+        function updateDrumItemClasses(picker, activeIdx) {
+            let items = picker.querySelectorAll('.drum-item');
+            items.forEach((item, idx) => {
+                item.classList.remove('active', 'top-neighbor', 'bottom-neighbor');
+                if (idx === activeIdx) {
+                    item.classList.add('active');
+                } else if (idx === activeIdx - 1) {
+                    item.classList.add('top-neighbor');
+                } else if (idx === activeIdx + 1) {
+                    item.classList.add('bottom-neighbor');
+                }
+            });
+        }
+
+        function initDrumPickers() {
+            ['wheel-interval', 'wheel-duration'].forEach(pickerId => {
+                let picker = document.getElementById(pickerId);
+                if (!picker) return;
+
+                let handleScroll = () => {
+                    isDrumUserScrolling = true;
+                    if (drumScrollTimeout) clearTimeout(drumScrollTimeout);
+                    let itemHeight = 28;
+                    let activeIdx = Math.round(picker.scrollTop / itemHeight);
+                    updateDrumItemClasses(picker, activeIdx);
+
+                    drumScrollTimeout = setTimeout(() => {
+                        isDrumUserScrolling = false;
+                        onPurgeSettingChange();
+                    }, 300);
+                };
+
+                picker.addEventListener('scroll', handleScroll, { passive: true });
+
+                // PC Mouse Drag-to-Scroll Engine
+                let isMouseDown = false;
+                let startY = 0;
+                let startScrollTop = 0;
+                let hasDragged = false;
+
+                picker.addEventListener('mousedown', (e) => {
+                    isMouseDown = true;
+                    hasDragged = false;
+                    startY = e.clientY;
+                    startScrollTop = picker.scrollTop;
+                    picker.style.scrollSnapType = 'none';
+                });
+
+                window.addEventListener('mousemove', (e) => {
+                    if (!isMouseDown) return;
+                    let deltaY = e.clientY - startY;
+                    if (Math.abs(deltaY) > 4) {
+                        hasDragged = true;
+                    }
+                    picker.scrollTop = startScrollTop - deltaY;
+                    let activeIdx = Math.round(picker.scrollTop / 28);
+                    updateDrumItemClasses(picker, activeIdx);
+                });
+
+                let endDrag = () => {
+                    if (!isMouseDown) return;
+                    isMouseDown = false;
+                    picker.style.scrollSnapType = 'y mandatory';
+                    let targetIdx = Math.round(picker.scrollTop / 28);
+                    picker.scrollTop = targetIdx * 28;
+                    updateDrumItemClasses(picker, targetIdx);
+                    if (hasDragged) {
+                        onPurgeSettingChange();
+                    }
+                };
+
+                window.addEventListener('mouseup', endDrag);
+
+                let items = picker.querySelectorAll('.drum-item');
+                items.forEach((item, idx) => {
+                    item.addEventListener('click', () => {
+                        if (hasDragged) return;
+                        picker.scrollTop = idx * 28;
+                        updateDrumItemClasses(picker, idx);
+                        onPurgeSettingChange();
+                    });
+                });
+            });
+        }
+
         function onPurgeSettingChange() {
             if (latestData && latestData.web_auth_required && !latestData.web_authenticated) {
                 alert("🔒 Webinterface ist geschützt. Bitte zuerst Passwort eingeben.");
-                let intSel = document.getElementById('purge-interval-select');
-                let durSel = document.getElementById('purge-duration-select');
-                if (intSel && latestData) intSel.value = latestData.purge_interval_min !== undefined ? latestData.purge_interval_min : 240;
-                if (durSel && latestData) durSel.value = latestData.purge_duration_sec !== undefined ? latestData.purge_duration_sec : 30;
+                if (latestData) {
+                    setDrumValue('wheel-interval', latestData.purge_interval_min !== undefined ? latestData.purge_interval_min : 240);
+                    setDrumValue('wheel-duration', latestData.purge_duration_sec !== undefined ? latestData.purge_duration_sec : 30);
+                }
                 return;
             }
-            let intVal = document.getElementById('purge-interval-select').value;
-            let durVal = document.getElementById('purge-duration-select').value;
+            let intVal = getDrumValue('wheel-interval');
+            let durVal = getDrumValue('wheel-duration');
             let savedPass = sessionStorage.getItem('idry_web_pass') || '';
             fetch('/api/settings/purge?interval=' + intVal + '&duration=' + durVal + '&pass=' + encodeURIComponent(savedPass), { method: 'POST' })
                 .then(r => r.json())
@@ -3666,13 +4699,9 @@ void handlePortalRoot() {
                     } else {
                         if (purgeSection) purgeSection.style.display = 'block';
 
-                        let purgeIntSel = document.getElementById('purge-interval-select');
-                        let purgeDurSel = document.getElementById('purge-duration-select');
-                        if (purgeIntSel && document.activeElement !== purgeIntSel) {
-                            purgeIntSel.value = data.purge_interval_min !== undefined ? data.purge_interval_min : 240;
-                        }
-                        if (purgeDurSel && document.activeElement !== purgeDurSel) {
-                            purgeDurSel.value = data.purge_duration_sec !== undefined ? data.purge_duration_sec : 30;
+                        if (!isDrumUserScrolling) {
+                            setDrumValue('wheel-interval', data.purge_interval_min !== undefined ? data.purge_interval_min : 240);
+                            setDrumValue('wheel-duration', data.purge_duration_sec !== undefined ? data.purge_duration_sec : 30);
                         }
 
                         let purgeBadge = document.getElementById('purge-badge');
@@ -3689,7 +4718,10 @@ void handlePortalRoot() {
                             }
                             if (sandTop) sandTop.style.transform = "scale(0)";
                             if (sandBottom) sandBottom.style.transform = "scale(0)";
-                            if (sandStream) sandStream.style.opacity = "0";
+                            if (sandStream) {
+                                sandStream.setAttribute("class", "");
+                                sandStream.style.opacity = "0";
+                            }
                         } else if (data.purge_active) {
                             // ACTIVE PURGE (100% AUF) -> RED WARN SAND!
                             let remaining = data.purge_remaining_sec !== undefined ? data.purge_remaining_sec : 0;
@@ -3707,7 +4739,7 @@ void handlePortalRoot() {
                                 sandTop.style.transform = "scale(" + pct + ")";
                             }
                             if (sandStream) {
-                                sandStream.setAttribute("stroke", "#f87171");
+                                sandStream.setAttribute("class", "sand-stream-flowing-red");
                                 sandStream.style.opacity = "1";
                             }
                             if (sandBottom) {
@@ -3736,7 +4768,7 @@ void handlePortalRoot() {
                                 sandTop.style.transform = "scale(" + pct + ")";
                             }
                             if (sandStream) {
-                                sandStream.setAttribute("stroke", "#38bdf8");
+                                sandStream.setAttribute("class", "sand-stream-flowing-blue");
                                 sandStream.style.opacity = "1";
                             }
                             if (sandBottom) {
@@ -3910,6 +4942,9 @@ void handlePortalRoot() {
 
                     updateLogHistory('web-log-console', data.sys_logs, webLogHistoryLocal, "[00:00:00] Initializing Local System Console...", localFilterLvl);
                     updateLogHistory('web-log-console-remote', data.remote_sys_logs, webLogHistoryRemote, "[00:00:00] Waiting for Remote " + remoteRoleStr + " ESP-NOW Log Stream...", remoteFilterLvl);
+
+                    // Smart Live-Advisor & Heuristic Evaluation
+                    evaluateGrowerHeuristics(data);
                 })
                 .catch(err => {
                     // Connection lost to ESP32
@@ -4493,13 +5528,22 @@ void handlePortalRoot() {
         setInterval(updateData, 1000);
         setInterval(fetchHistory, 1000);
         initHoldButtonListeners();
+        initDrumPickers();
+        renderAdvisorMsg(0);
         updateData();
         fetchHistory();
     </script>
 </body>
 </html>
 )rawhtml";
-    server.send(200, "text/html", html);
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.send(200, "text/html", "");
+    server.sendContent(DASHBOARD_HTML_PART1);
+    server.sendContent(pageTitle);
+    server.sendContent(DASHBOARD_HTML_PART2);
+    server.sendContent(String(sysConfig.wifi_ssid));
+    server.sendContent(DASHBOARD_HTML_PART3);
+    server.sendContent("");
   } else {
     // Show Wi-Fi setup captive portal
     int n = WiFi.scanNetworks();
@@ -4752,7 +5796,83 @@ void handleSettingsPage() {
             padding-bottom: 6px;
             display: flex;
             align-items: center;
-            gap: 8px;
+            justify-content: space-between;
+            position: relative;
+        }
+        .info-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 15px;
+            height: 15px;
+            border-radius: 50%;
+            background: rgba(56, 189, 248, 0.12);
+            border: 1px solid rgba(56, 189, 248, 0.35);
+            color: #38bdf8;
+            font-size: 11px;
+            font-family: serif;
+            font-style: italic;
+            font-weight: bold;
+            cursor: pointer;
+            user-select: none;
+            line-height: 1;
+            transition: all 0.2s ease;
+            flex-shrink: 0;
+            margin-left: auto;
+        }
+        .info-btn:hover, .info-btn.active {
+            background: rgba(56, 189, 248, 0.3);
+            border-color: #38bdf8;
+            color: #ffffff;
+            box-shadow: 0 0 8px rgba(56, 189, 248, 0.6);
+        }
+        .info-bubble {
+            position: absolute;
+            top: calc(100% + 6px);
+            right: 0;
+            width: 280px;
+            max-width: 85vw;
+            background: #090d16;
+            border: 1px solid rgba(56, 189, 248, 0.6);
+            border-radius: 12px;
+            padding: 12px 14px;
+            color: #e2e8f0;
+            font-size: 12px;
+            font-weight: normal;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            text-transform: none;
+            letter-spacing: normal;
+            line-height: 1.5;
+            box-shadow: 0 20px 45px -5px rgba(0, 0, 0, 0.95), 0 0 20px rgba(56, 189, 248, 0.3);
+            z-index: 9999;
+            pointer-events: auto;
+            animation: info-fade-in 0.2s ease-out;
+        }
+        .info-bubble::before {
+            content: '';
+            position: absolute;
+            top: -8.5px;
+            right: 4px;
+            width: 0;
+            height: 0;
+            border-left: 7px solid transparent;
+            border-right: 7px solid transparent;
+            border-bottom: 8.5px solid rgba(56, 189, 248, 0.6);
+        }
+        .info-bubble::after {
+            content: '';
+            position: absolute;
+            top: -7px;
+            right: 5px;
+            width: 0;
+            height: 0;
+            border-left: 6px solid transparent;
+            border-right: 6px solid transparent;
+            border-bottom: 7px solid #090d16;
+        }
+        @keyframes info-fade-in {
+            from { opacity: 0; transform: translateY(-4px); }
+            to { opacity: 1; transform: translateY(0); }
         }
         .form-group { margin-bottom: 18px; }
         .form-group:last-child { margin-bottom: 0; }
@@ -4824,8 +5944,8 @@ void handleSettingsPage() {
             <!-- WLAN Einstellungen Panel -->
             <div class="settings-card">
                 <div class="section-title">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"></path><path d="M1.42 9a16 16 0 0 1 21.16 0"></path><path d="M8.53 16.11a6 6 0 0 1 6.95 0"></path><circle cx="12" cy="20" r="1"></circle></svg>
-                    WLAN Verbindung
+                    <span style="display: flex; align-items: center; gap: 8px;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"></path><path d="M1.42 9a16 16 0 0 1 21.16 0"></path><path d="M8.53 16.11a6 6 0 0 1 6.95 0"></path><circle cx="12" cy="20" r="1"></circle></svg> WLAN Verbindung</span>
+                    <span class="info-btn" onclick="toggleInfo(event, 13)" onmouseenter="showInfo(this, 13)" onmouseleave="hideInfo(this)">i</span>
                 </div>
                 <div class="form-group">
                     <label for="wifi_ssid">Netzwerk (SSID)</label>
@@ -4882,8 +6002,8 @@ void handleSettingsPage() {
             <!-- MQTT Einstellungen Panel -->
             <div class="settings-card">
                 <div class="section-title">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
-                    MQTT Konfiguration
+                    <span style="display: flex; align-items: center; gap: 8px;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg> MQTT Konfiguration</span>
+                    <span class="info-btn" onclick="toggleInfo(event, 14)" onmouseenter="showInfo(this, 14)" onmouseleave="hideInfo(this)">i</span>
                 </div>
                 <div class="form-group">
                     <label for="mqtt_server">MQTT Broker Adresse</label>
@@ -4933,8 +6053,8 @@ void handleSettingsPage() {
             <!-- ESP-NOW Einstellungen Panel -->
             <div class="settings-card">
                 <div class="section-title">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
-                    ESPNOW &nbsp;<span id="espnow-local-mac" style="font-family: monospace; text-transform: none; color: #94a3b8;">[Laden...]</span>
+                    <span style="display: flex; align-items: center; gap: 8px;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg> ESPNOW &nbsp;<span id="espnow-local-mac" style="font-family: monospace; text-transform: none; color: #94a3b8;">[Laden...]</span></span>
+                    <span class="info-btn" onclick="toggleInfo(event, 15)" onmouseenter="showInfo(this, 15)" onmouseleave="hideInfo(this)">i</span>
                 </div>
                 <div class="form-group">
                     <label for="espnow_role">Status / Rolle</label>
@@ -5038,8 +6158,8 @@ void handleSettingsPage() {
             <!-- Buzzer Test Panel -->
             <div class="settings-card">
                 <div class="section-title">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5L6 9H2v6h4l5 4V5z"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
-                    Buzzer Test
+                    <span style="display: flex; align-items: center; gap: 8px;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5L6 9H2v6h4l5 4V5z"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg> Buzzer Test</span>
+                    <span class="info-btn" onclick="toggleInfo(event, 16)" onmouseenter="showInfo(this, 16)" onmouseleave="hideInfo(this)">i</span>
                 </div>
                 <div class="btn-row" style="margin-top: 5px;">
                     <button type="button" onclick="testBuzzer('local')" class="btn btn-secondary">Lokal abspielen</button>
@@ -5050,8 +6170,8 @@ void handleSettingsPage() {
             <!-- Systemeinstellungen Panel -->
             <div class="settings-card">
                 <div class="section-title">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
-                    System & Anzeige
+                    <span style="display: flex; align-items: center; gap: 8px;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg> System & Anzeige</span>
+                    <span class="info-btn" onclick="toggleInfo(event, 17)" onmouseenter="showInfo(this, 17)" onmouseleave="hideInfo(this)">i</span>
                 </div>
                 <div class="form-group">
                     <label for="brightness-slider">Display-Helligkeit: <span id="brightness-label">)rawhtml";
@@ -5101,8 +6221,8 @@ void handleSettingsPage() {
         <!-- System Status Panel -->
         <div class="settings-card" style="margin-top: 25px;">
             <div class="section-title">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
-                System Status
+                <span style="display: flex; align-items: center; gap: 8px;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg> System Status</span>
+                <span class="info-btn" onclick="toggleInfo(event, 18)" onmouseenter="showInfo(this, 18)" onmouseleave="hideInfo(this)">i</span>
             </div>
             <div class="value-row" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 13px;">
                 <span>IP-Adresse:</span>
@@ -5130,8 +6250,8 @@ void handleSettingsPage() {
         <!-- Geräte-Management Panel -->
         <div class="settings-card" style="margin-top: 25px;">
             <div class="section-title" style="color: #f87171;">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
-                Geräte-Management
+                <span style="display: flex; align-items: center; gap: 8px;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg> Geräte-Management</span>
+                <span class="info-btn" onclick="toggleInfo(event, 19)" onmouseenter="showInfo(this, 19)" onmouseleave="hideInfo(this)">i</span>
             </div>
             <form id="reset-form" action="/settings/reset" method="POST">
                 <div class="btn-row" style="margin-top: 5px; flex-direction: column; gap: 12px;">
@@ -5161,6 +6281,70 @@ void handleSettingsPage() {
     </div>
 
     <script>
+        const PANEL_INFOS = {
+            // [13] WLAN Verbindung
+            13: "<b>Wi-Fi Verbindung</b><br>Konfiguration des lokalen WLAN-Netzwerks (SSID, Passwort), Web-Passwortschutz und RF-Sendeleistung.",
+            
+            // [14] MQTT Konfiguration
+            14: "<b>MQTT Konfiguration</b><br>Parameter für den MQTT-Broker (Server, Port, Anmeldedaten, Gerätename und Sendeintervall).",
+            
+            // [15] ESPNOW Einstellungen
+            15: "<b>ESP-NOW Funknetzwerk</b><br>Rollenkonfiguration (Master/Slave), Funkkanal, Pairing-Steuerung und Verbindungsverlust-Verhalten.",
+            
+            // [16] Buzzer Test
+            16: "<b>Buzzer Test</b><br>Akustischer Funktionstest des Onboard-Piezo-Lautsprechers (lokal und über Funk auf gekoppeltem Slave).",
+            
+            // [17] System & Anzeige
+            17: "<b>System & Anzeige</b><br>Display-Helligkeit mit Gamma-2.2-Dimmung, Servo-Update-Intervall und WLAN-Verbindungswatchdog.",
+            
+            // [18] System Status
+            18: "<b>System Status</b><br>Diagnoseübersicht mit aktueller IP-Adresse, Display-Modus, RSSI-Signalstärke und automatischem Wochen-Reboot.",
+            
+            // [19] Geräte-Management
+            19: "<b>Geräte-Management</b><br>Firmware & OTA-Update, Geräte-Neustart, Werkseinstellungen und vollständiger System-Reset."
+        };
+
+        let activeBubble = null;
+        let activeBubbleBtn = null;
+
+        function showInfo(btn, idx) {
+            hideInfo();
+            if (!PANEL_INFOS[idx]) return;
+            const bubble = document.createElement('div');
+            bubble.className = 'info-bubble';
+            bubble.innerHTML = PANEL_INFOS[idx];
+            btn.parentElement.appendChild(bubble);
+            btn.classList.add('active');
+            activeBubble = bubble;
+            activeBubbleBtn = btn;
+        }
+
+        function hideInfo() {
+            if (activeBubble) {
+                if (activeBubble.parentElement) activeBubble.parentElement.removeChild(activeBubble);
+                activeBubble = null;
+            }
+            if (activeBubbleBtn) {
+                activeBubbleBtn.classList.remove('active');
+                activeBubbleBtn = null;
+            }
+        }
+
+        function toggleInfo(evt, idx) {
+            evt.stopPropagation();
+            if (activeBubbleBtn === evt.currentTarget) {
+                hideInfo();
+            } else {
+                showInfo(evt.currentTarget, idx);
+            }
+        }
+
+        document.addEventListener('click', function(e) {
+            if (activeBubble && !activeBubble.contains(e.target) && e.target !== activeBubbleBtn) {
+                hideInfo();
+            }
+        });
+
         // Real-time brightness slider update
         const brightnessSlider = document.getElementById('brightness-slider');
         const brightnessLabel = document.getElementById('brightness-label');

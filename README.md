@@ -214,8 +214,33 @@ Die Displays teilen sich denselben physischen SPI-Kabelbaum (JST-Stecker am YD-E
 * **Saug-Sperre:** Ist die Außenluft feuchter als die Innenluft oder liegt sie $>2\%$ über dem Sollwert, schließt die Klappe sofort auf **0%**, um das Einsaugen feuchter Luft zu verhindern (inkl. akustischem Warn-Chime).
 
 ### 6. ESP-NOW Master/Slave Reconnection & 2-Stufen Fail-Safe
-* **Fast-Track Pairing:** Automatisches Channel-Hopping (Kanal 1–13) und unverschlüsseltes Peering (`peerInfo.encrypt = false` für 0% Paketverlust bei Kanalwechseln) mit gezieltem MAC-Vergleich (`strcasecmp`) und Protokollversions-Verifikation (V3).
+* **Fast-Track Pairing:** Automatisches Channel-Hopping (Kanal 1–13) und unverschlüsseltes Peering (`peerInfo.encrypt = false` für 0% Paketverlust bei Kanalwechseln) mit gezieltem MAC-Vergleich (`strcasecmp`) und Protokollversions-Verifikation (V5).
 * **Fail-Safe Schutz (>60s):** Fällt die Funkverbindung aus, schaltet der Slave auf **50% Notfall-Öffnung** oder übernimmt autonom über eigene Sensoren.
+
+### 7. Stoßlüftungs-Timer (Intervall-Purge) & 3D Walzen-Drehwähler
+* **Intervall-Stoßlüftung:** Ermöglicht periodisches Zwangs-Öffnen der Klappe (Intervall 5–60 min, Dauer 10–600 sec) zum schnellen Gasaustausch im Trockenzelt.
+* **Animierte SVG-Sanduhr:** Visualisiert live das herabrieselnde Sandkorn (`@keyframes sand-pour`), dynamische Füllstände oben/unten, asynchron pulsierenden Sandstrahl-Glow (310ms / 190ms Primzahl-Farbflimmern) und die verbleibende Restzeit (`IN mm:ss` in Blau / `OFFEN mm:ss` in Rot).
+* **3D Walzen-Drehwähler (Drum Pickers):** Touch- & PC-Maus-optimierte Walzen mit 2D Y-Stauchung (`scale(0.92, 0.65)`), leuchtendem Cyan-Glow (`#38bdf8`) und nativer Drag-to-Scroll PC-Maus-Steuerung (`cursor: grabbing`).
+* **Strikte Slave-Isolation:** Im Slave-Modus ist der Timer ausgeblendet und in der Firmware deaktiviert, sodass der Slave 100% synchron zum Master läuft.
+
+### 8. Interaktives Sprechblasen-Info-System (Integrierte Bedienhilfe)
+* **Reines Text-Icon `ℹ`:** Dezente 15px Kreisschaltflächen rechts in allen Panel- & Einstellungs-Titeln.
+* **100% Blickdichte Sprechblasen (`#090d16` & `z-index: 9999`):** Stark abgerundete Tiefschwarz-Boxen mit CSS-Dreiecksspitze zum Icon, Desktop-Hover, Mobile-Touch-Toggle und absolut blickdichter Deckkraft (kein Durchscheinen von Mond-Animationen oder Text).
+* **HTML-Formatierung:** Unterstützt formatierten Text mit Tags (`<b>`, `<br>`, Listen) für 50–1000 Zeichen pro Panel.
+* **Dictionary-Indizierung:** Strukturierte Zuordnung `PANEL_INFOS` (Index 0..13 auf dem Dashboard, 13..19 in den Einstellungen, Index 20 für den Grow Advisor).
+
+### 9. Smart Live-Advisor & Heuristik-Ticker (Grower 1×1 Engine)
+* **Full-Width Header-Widget & Non-Stop-Scroller:** Direkt unter dem Haupttitel mit animiertem 🧠-Icon, Wischgesten-Steuerung, `◀ 1 / X ▶` History-Zähler und kontinuierlichem Endlos-Laufband (Text läuft links heraus und rechts nahtlos wieder hinein).
+* **Interaktive Volltext-Sprechblase (`.advisor-popup-bubble`):** Durch Antippen/Klicken auf das Laufband öffnet sich eine 100% blickdichte Sprechblase (`#090d16`) mit vollständigem Bericht, Farb-Badge, Zeitstempel, eigenem `✕`-Schließen-Button sowie integrierten `◀ Älter` / `Neuer ▶` Blätter-Buttons für alle 20 Ringpuffer-Einträge.
+* **Feste Endanschläge & Dynamische Button-Ausblendung:**
+  - Bei der neuesten Meldung (1) wird der `Neuer ▶` Button automatisch ausgeblendet.
+  - Bei der ältesten Meldung im Puffer wird der `◀ Älter` Button automatisch ausgeblendet.
+  - Kein versehentliches Überspringen oder verwirrendes Durchmischen von Alt-Meldungen.
+* **10-Sekunden KI-Heuristik & Ganzzahlige Anti-Spam-Deduplizierung:**
+  - Analysiert in Echtzeit alle 10s das Feuchteverhältnis zur gewählten Trockenstrategie (60/60, VPD, VPD AUTO mit 14-Tage-Stufenplan & Stängel-Knicktest).
+  - Sensorwerte werden auf ganzzahlige bzw. quantisierte Stufen gerundet (z. B. `Math.round(rF)`), sodass normales Sensorrauschen keinen Spam im 20er-Ringpuffer erzeugt.
+* **Authentischer Grow-Bro Disclaimer (Info-Button `ℹ`):**
+  > *„Dies sind unverbindliche Tipps & Denkanstöße – nimm sie bitte nicht zu bierernst! Die Automatik regelt so gut es geht, aber kein Algorithmus kann dein gärtnerisches Feingefühl ersetzen. Jeder Grow, jedes Zelt und jedes Raumklima ist anders. Sieh die Tipps nicht als Panik-Alarm, sondern als Anregung zum Mitdenken und selber Recherchieren. Keine Gewähr auf dynamische Tipps – Happy Growing! 🌿✌️“*
 
 ---
 
@@ -232,3 +257,4 @@ pio device monitor
 ## 📝 Lizenz
 
 Dieses Projekt ist unter der **MIT Lizenz** veröffentlicht.
+

@@ -132,3 +132,31 @@ Do not change SPI, I2C, ADC, or actuator pin assignments:
   - Slave Screen: Local = Red Box, Remote (Master) = Blue Box.
 * **Automatic VPD AUTO Flash Persistence on Midnight Rollover:**
   - `getVpdAutoCurrentDay()` detects `daysPassed > 0` (00:00 midnight sync or 24h uptime boundary), updates `sysConfig.vpd_auto_day`, resets start timestamp, and invokes `saveConfiguration()` to LittleFS Flash immediately. Ensures day progression survives reboots and firmware updates.
+
+---
+
+## Stoßlüftungs-Timer (Intervall-Purge) & 3D Drum Selection Wheels
+* **Stoßlüftungs-Timer Engine:**
+  - Configurable periodic ventilation pulse (`sysConfig.purge_interval_min`, `sysConfig.purge_duration_sec`).
+  - Animated SVG Sanduhr Widget (`#hourglass-svg`) with live sand trickling stream (`@keyframes sand-pour`), dynamic upper/lower sand level geometry, and live badge countdown (`IN mm:ss` in blue during waiting phase, `OFFEN mm:ss` in red during active open purge).
+  - High priority override: Forces rotor to 100% open during active pulse.
+  - Strict Slave Mode Isolation: On Slave devices (`espnow_role == 2`), the purge section is hidden from UI and firmware engine explicitly disables purge timer (`isPurgeActive = false`) so the Slave strictly mirrors the Master's remote instructions.
+* **3D Drum Selection Wheels (Walzen-Drehwähler):**
+  - Interactive 3-row CSS drum pickers (`#wheel-interval`, `#wheel-duration`).
+  - Authentic 2D Y-axis compression (`scale(0.92, 0.65)`) on upper and lower neighbor rows for true drum curvature depth.
+  - Active center cell framed by glowing cyan glass borders (`#38bdf8`, `box-shadow: 0 0 24px rgba(56, 189, 248, 0.42)`, `text-shadow: 0 0 10px rgba(56, 189, 248, 0.7)`).
+  - PC Mouse Drag-to-Scroll Engine: Event handlers (`mousedown`, `mousemove`, `mouseup`) provide fluid 1:1 mouse dragging with grabbing hand cursor (`cursor: grabbing`) and smooth snapping (`28px` item boundaries) on desktop browsers.
+* **4-Hour RSSI Signal Sparkline Graph:**
+  - Double-width RSSI card renders 4-hour telemetry window (24 historical samples) with multi-color gradient (Red -> Orange -> Yellow -> Green).
+
+---
+
+## Smart Live-Advisor & Heuristic Ticker Engine
+* **Full-Width Header-Widget & Non-Stop Scroller:** Placed directly beneath the main dashboard title with animated pulsing brain icon (`🧠`), history navigation controls (`◀ 1 / X ▶`), dedicated info button (`Index 20`), and continuous seamless looping text scroller.
+* **100% Solid Dark Speech Bubble Modal (`.advisor-popup-bubble`):** Pure opaque `#090d16` with `z-index: 9999` preventing any bleed-through of underlying canvas/moon elements. Clicking the ticker opens the full-text popup with integrated `◀ Älter` / `Neuer ▶` history buttons and a `✕` close button.
+* **History Navigation Boundaries & Dynamic Visibility:** Hard stop at message index 0 (`Neuer ▶` button auto-hides) and oldest message index (`◀ Älter` button auto-hides) to eliminate accidental wrap-around.
+* **20-Message Ringbuffer & Anti-Spam Deduplication:** Holds up to 20 historical thermodynamic grower tips with exact timestamps `[HH:MM:SS]` and individual color-coded badges (🟢 `OPTIMAL`, 🟡 `DIY TIPP`, 🔴 `WARNUNG`, 🔵 `WETTER`, 🟣 `SYSTEM`). Evaluates every 10 seconds and rejects duplicate messages.
+* **Integer-Quantized Environmental Heuristics:** Quantizes sensor values to integer rounded steps (`Math.round(...)`) to eliminate floating-point noise and prevent false-positive ringbuffer spamming.
+* **Zero-RAM Chunked HTTP Streaming Architecture:** Splits dashboard HTML into PROGMEM chunks streamed via `server.setContentLength(CONTENT_LENGTH_UNKNOWN)` and `server.sendContent(...)` using 0 Bytes of dynamic RAM heap, preventing string truncation and memory crashes.
+
+
