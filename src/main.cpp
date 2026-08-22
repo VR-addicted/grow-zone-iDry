@@ -3252,7 +3252,7 @@ void handlePortalRoot() {
             </details>
         </div>
         <div class="footer" style="display: flex; justify-content: space-between; align-items: center; margin-top: 25px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.05);">
-            <span id="footer-text">iDRY26 - (bench: <span id="footer-bench" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> loops/s | heap: <span id="footer-heap" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> KB | alloc: <span id="footer-alloc" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> KB)</span>
+            <span id="footer-text">iDRY26 <span id="footer-fw-ver">--</span> - (bench: <span id="footer-bench" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> loops/s | heap: <span id="footer-heap" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> KB | alloc: <span id="footer-alloc" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> KB)</span>
             <a href="/settings" id="footer-settings-link" style="color: #818cf8; text-decoration: none; display: inline-flex; align-items: center; gap: 5px; font-weight: 600; padding: 6px 12px; background: rgba(129, 140, 248, 0.1); border-radius: 8px; border: 1px solid rgba(129, 140, 248, 0.2); transition: all 0.2s;">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l-.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
                 Einstellungen
@@ -4956,6 +4956,10 @@ void handlePortalRoot() {
                     if (allocEl) {
                         allocEl.innerText = data.max_alloc_heap ? (data.max_alloc_heap / 1024).toFixed(1) : '--';
                     }
+                    const fwVerEl = document.getElementById('footer-fw-ver');
+                    if (fwVerEl && data.fw_version) {
+                        fwVerEl.innerText = "v" + data.fw_version;
+                    }
 
                     if (data.sys_logs && Array.isArray(data.sys_logs)) {
                         let hasRemoteReboot = data.sys_logs.some(l => l && l.includes('Remote Reboot command received'));
@@ -6401,9 +6405,9 @@ void handleSettingsPage() {
             </form>
         </div>
 
-        <div class="footer" id="footer-text">IDRY26 Live Monitor v)rawhtml" +
+        <div class="footer" id="footer-text">iDRY26 v)rawhtml" +
       String("1.") + String(localFirmwareVersion) +
-      R"rawhtml( - (bench: <span id="footer-bench-settings" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> loops/s)</div>
+      R"rawhtml( - (bench: <span id="footer-bench-settings" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> loops/s | heap: <span id="footer-heap-settings" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> KB | alloc: <span id="footer-alloc-settings" style="font-family: monospace; color: #38bdf8; font-weight: bold;">--</span> KB)</div>
     </div>
 
     <script>
@@ -6727,6 +6731,14 @@ void handleSettingsPage() {
                     const settingsBenchEl = document.getElementById('footer-bench-settings');
                     if (settingsBenchEl) {
                         settingsBenchEl.innerText = data.loops_per_sec || 0;
+                    }
+                    const settingsHeapEl = document.getElementById('footer-heap-settings');
+                    if (settingsHeapEl) {
+                        settingsHeapEl.innerText = data.free_heap ? (data.free_heap / 1024).toFixed(1) : '--';
+                    }
+                    const settingsAllocEl = document.getElementById('footer-alloc-settings');
+                    if (settingsAllocEl) {
+                        settingsAllocEl.innerText = data.max_alloc_heap ? (data.max_alloc_heap / 1024).toFixed(1) : '--';
                     }
                     const otaBtn = document.getElementById('ota-update-btn');
                     if (otaBtn) {
